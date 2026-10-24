@@ -1,0 +1,9 @@
+{
+  "version": "1",
+  "name": "OnCue",
+  "type": "collection",
+  "ignore": [
+    "node_modules",
+    ".git"
+  ]
+}
