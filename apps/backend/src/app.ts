@@ -4,6 +4,7 @@ import { cors } from "hono/cors";
 import { createMiddleware } from "hono/factory";
 import { auth, trustedOrigins } from "./auth.js";
 import { db } from "./db.js";
+import api from "@/api/api.js";
 
 const requireSession = createMiddleware<{
   Variables: { session: typeof auth.$Infer.Session };
@@ -25,6 +26,7 @@ export const app = new Hono()
       allowMethods: ["GET", "POST", "OPTIONS"],
     }),
   )
+  .route("/", api)
   .all("/api/auth/*", (c) => auth.handler(c.req.raw))
   .get("/", (c) => c.text("Hello Hono!"))
   .get("/health/db", async (c) => {

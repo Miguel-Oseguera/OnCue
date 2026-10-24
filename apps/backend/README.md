@@ -29,10 +29,32 @@ Only the API URL belongs in the mobile app. Never put database credentials or
 
 ## Database changes
 
-The committed schema is `src/auth-schema.ts`. After changing Better Auth plugins
+The application schema is `src/schema.ts`. It also exports the generated Better
+Auth tables from `src/auth-schema.ts`. After changing Better Auth plugins
 or options that affect its schema, run `pnpm --filter backend auth:generate`.
 Then run `pnpm --filter backend db:generate`, review the generated SQL, and run
 `pnpm --filter backend db:migrate` against your development branch first.
+
+The application tables follow `Schema.drawio`:
+
+- Events have a name, location, and an array of calendar dates.
+- Members belong to an event. Their name and profile picture are independent of
+  Better Auth users. Lead and volunteer flags describe their event roles.
+- Event owners use `event_owner`. Team membership uses `team_member`, whose
+  `is_lead` flag identifies each team's leads. Tasks use `task_assignee` to
+  support multiple assigned members. Each join table prevents duplicate pairs.
+- Schedule entries have a generated ID and a timezone-aware start time.
+- Media and AI activity belong to an event and can optionally reference a task.
+  Photo and video/audio fields store file URLs or storage keys. Transcripts,
+  decisions, and actions can be absent.
+- Priority and status are required text because the diagram defines no allowed
+  values. All application IDs are generated UUIDs.
+
+Deleting an event deletes its application records. Deleting a task removes its
+assignments and clears task references on media and AI activity. Callers must
+ensure linked members, teams, tasks, media, and AI activity belong to the same
+event; foreign keys validate each referenced record, but do not enforce this
+shared event rule.
 
 The migration runner uses the matching direct connection over WebSockets. If
 `DATABASE_URL_UNPOOLED` points at a different database branch, it derives the
