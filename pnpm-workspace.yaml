@@ -1,6 +1,8 @@
 packages:
   - "apps/*"
   - "packages/*"
+allowBuilds:
+  esbuild: true
 minimumReleaseAgeExclude:
   - '@expo/cli@58.1.15'
   - '@expo/config@58.0.8'
