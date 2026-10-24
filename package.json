@@ -2,6 +2,7 @@
   "name": "OnCue",
   "private": true,
   "scripts": {
+    "ios:dev": "NODE_OPTIONS=--dns-result-order=ipv4first pnpm --dir apps/mobile exec expo start --dev-client --localhost",
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint",
