@@ -1,41 +1,50 @@
 import { Hono } from "hono";
-import { eq } from "drizzle-orm";
-import { db } from "@/db.js";
-import { task, taskAssignee } from "@/schema.js";
-import { requireSession } from "@/auth.js";
+import { requireSession } from "../auth.js";
+import { claimTask, createTask, listTasks, updateTask } from "../tasks.js";
+import {
+  createTaskSchema,
+  taskParams,
+  taskQuery,
+  updateTaskSchema,
+  validate,
+} from "./validation.js";
 
-const tasks = new Hono().basePath("/tasks");
-
-tasks.get("/all", async (c) => {
-  const tasks = await db.select().from(task);
-  c.status(200);
-  return c.json(tasks);
-});
-
-tasks.post("/claim/:taskId", requireSession, async (c) => {
-  const session = c.get("session");
-  const { taskId } = c.req.param();
-
-  const res = db.transaction(async (tx) => {
-    const [target] = await tx
-      .select({ slots: task.slots })
-      .from(task)
-      .where(eq(task.id, taskId))
-      .for("update");
-
-    if (!target) return c.notFound();
-
-    const claims = await tx
-      .select({ memberId: taskAssignee.memberId })
-      .from(taskAssignee)
-      .where(eq(taskAssignee.taskId, taskId));
-
-    if (claims.length >= target.slots) {
-      c.status(505);
-    }
-  });
-});
-
-tasks.post("/new", (c) => c.text("new task created!"));
+const tasks = new Hono()
+  .get("/", requireSession, validate("query", taskQuery), async (c) => {
+    const query = c.req.valid("query");
+    return c.json(
+      await listTasks({
+        teamId: query.teamId,
+        claimedBy: query.claimedBy ? c.get("session").user.id : undefined,
+      }),
+      200,
+    );
+  })
+  .post("/", requireSession, validate("json", createTaskSchema), async (c) => {
+    return c.json(await createTask(c.req.valid("json")), 201);
+  })
+  .patch(
+    "/:taskId",
+    requireSession,
+    validate("param", taskParams),
+    validate("json", updateTaskSchema),
+    async (c) => {
+      return c.json(
+        await updateTask(c.req.valid("param").taskId, c.req.valid("json")),
+        200,
+      );
+    },
+  )
+  .post(
+    "/claim/:taskId",
+    requireSession,
+    validate("param", taskParams),
+    async (c) => {
+      return c.json(
+        await claimTask(c.req.valid("param").taskId, c.get("session").user.id),
+        200,
+      );
+    },
+  );
 
 export default tasks;
