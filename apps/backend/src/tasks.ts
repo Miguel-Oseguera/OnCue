@@ -39,7 +39,7 @@ export async function listTasks(
           )
         : undefined,
     ),
-    with: { assignees: true },
+    with: { assignees: true, aiActivity: true },
     orderBy: [desc(task.createdAt), task.id],
   });
   return rows.map(taskResponse);

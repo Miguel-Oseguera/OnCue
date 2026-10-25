@@ -1,16 +1,16 @@
-meta {
-  name: Claim
+info:
+  name: claim task
   type: http
-  seq: 3
-}
+  seq: 1
 
-get {
+http:
+  method: GET
   url: http://localhost:3000/api/tasks/claim/90655cdb-078b-4bda-af2d-dcb778232f52
-  body: none
   auth: inherit
-}
 
-settings {
+settings:
   encodeUrl: true
   timeout: 0
-}
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: false
