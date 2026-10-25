@@ -1,7 +1,7 @@
 import { Pool } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-serverless";
 import { env } from "./env.js";
-import * as schema from "./auth-schema.js";
+import * as schema from "./schema.js";
 
 // WebSockets work where outbound Postgres TCP is unavailable. Node 24 supplies WebSocket.
 export const pool = new Pool({
