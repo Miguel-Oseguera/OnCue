@@ -140,7 +140,7 @@ missing-framework error. Keep the plugin when regenerating the iOS project.
 1. Connect your glasses, then open **Hands-free capture** on the dashboard.
 2. Tap **Start hands-free mode** and approve camera and microphone access in Meta AI.
 3. Wait for **Listening for OnCue**, then say **“OnCue, capture this task. The projector in room 204 is broken.”**
-4. Pause for two seconds; the app sends the photo and description to backend AI. Review delivery and the resulting tasks in the app.
+4. Pause for three seconds; the app sends the photo and description to backend AI. Review delivery and the resulting tasks in the app.
 5. Tap **Stop listening** here or on the dashboard when finished.
 
 DAT 1.0 Speech and standalone Photo are experimental and must be enabled for the
@@ -217,8 +217,8 @@ launch. SDK build and command tests do not verify Meta's app-name routing.
 Say **“OnCue, capture this task. The projector in room 204 is broken.”**
 A description in the same final utterance is extracted without the command prefix.
 If speech recognition splits it into segments, OnCue accepts following description
-segments until a two-second pause. A bare capture command waits up to eight seconds
-for a description; a report window lasts at most 30 seconds. Stop remains a complete
+segments until a three-second pause. A bare capture command waits up to twenty seconds
+for a description; a report window lasts at most 60 seconds. Stop remains a complete
 utterance and is never appended to a description. Speech outside this window is
 ignored. Only one capture/description bundle is active at once.
 
@@ -262,3 +262,12 @@ recognition, description finalization (character count only), photo save, and th
 ding's audio route. Frontend logs mark delivery start and backend confirmation.
 They do not print the description, image bytes, authentication cookies, or tokens.
 The capture page's delivery status remains the simplest way to check progress.
+
+
+Live diagnostics are also visible inside the capture screen and written to
+Caches/OnCueDiagnostics.log (last 60 events). This avoids relying on device console
+stdout forwarding. Events include permission results, session/Speech states,
+partial/final transcript arrival (character counts only), capture and delivery.
+Partial speech cancels the completion timer; only a final transcript followed by
+three seconds without further speech ends the description. The 60-second safety
+limit keeps unfinished descriptions local for review instead of sending fragments.

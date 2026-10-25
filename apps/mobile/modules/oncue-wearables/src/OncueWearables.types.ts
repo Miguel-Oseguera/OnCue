@@ -34,6 +34,7 @@ export type CapturedPhoto = {
   taskIds?: string[];
 };
 export type CaptureState = {
+  diagnostics?: string[];
   soundNotice?: string | null;
   collectingDescription: boolean;
   currentDescription: string;

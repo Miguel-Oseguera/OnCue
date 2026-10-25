@@ -84,6 +84,10 @@ final class OncueWearablesCapture {
   private var collectingDescription = false
   private var descriptionText = ""
   private var descriptionSettled = true
+  private var unfinishedSpeech = false
+  private var descriptionComplete = false
+  private var diagnostics: [String] = []
+  private var lastSpeechLog = Date.distantPast
   private var pendingPhoto: SavedCapture?
   private var descriptionTimeout: Task<Void, Never>?
   private var descriptionLimit: Task<Void, Never>?
@@ -111,7 +115,7 @@ final class OncueWearablesCapture {
   }
 
   func snapshot() -> [String: Any] {
-    ["enabled": enabled, "listening": listening, "capturing": capturing || saving,
+    ["diagnostics": diagnostics, "enabled": enabled, "listening": listening, "capturing": capturing || saving,
      "readyForCapture": enabled && listening && !capturing && !saving && photoStopped,
      "soundNotice": soundNotice.map { $0 as Any } ?? NSNull(),
      "collectingDescription": collectingDescription, "currentDescription": descriptionText,
@@ -124,11 +128,26 @@ final class OncueWearablesCapture {
   func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
   private func publish() { let value = snapshot(); for observer in observers.values { observer(value) } }
 
+  func recordDiagnostic(_ message: String) {
+    let line = "[OnCue] \(ISO8601DateFormatter().string(from: Date())) \(message)"
+    NSLog("%@", line)
+    diagnostics.append(line)
+    diagnostics = Array(diagnostics.suffix(60))
+    let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("OnCueDiagnostics.log")
+    // Bound the diagnostic file and avoid recording speech content or credentials.
+    try? (diagnostics.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+    publish()
+  }
+
   func start(preferredDeviceId: String? = nil) async throws -> [String: Any] {
     #if targetEnvironment(simulator)
     throw CaptureFailure("Hands-free capture requires your connected glasses and a physical iPhone.")
     #else
-    guard !enabled, session == nil, !permissionsPending, !saving else { return snapshot() }
+    recordDiagnostic("Hands-free start requested")
+    guard !enabled, session == nil, !permissionsPending, !saving else {
+      recordDiagnostic("Start deferred: enabled=\(enabled), permissionsPending=\(permissionsPending), saving=\(saving)")
+      return snapshot()
+    }
     let run = UUID(); generation = run
     permissionsPending = true; phase = "permissions"; error = nil; publish()
     defer { permissionsPending = false }
@@ -139,6 +158,7 @@ final class OncueWearablesCapture {
         let current = try await Wearables.shared.checkPermissionStatus(permission)
         let granted = current == .granted ? current : try await Wearables.shared.requestPermission(permission)
         guard generation == run else { return snapshot() }
+        recordDiagnostic("Permission \(permission): \(granted)")
         guard granted == .granted else { throw CaptureFailure("Approve camera and microphone access in Meta AI, then try again.") }
       }
       guard let device = Wearables.shared.devices.first(where: {
@@ -194,6 +214,7 @@ final class OncueWearablesCapture {
   }
 
   private func sessionChanged(_ state: DeviceSessionState) {
+    recordDiagnostic("Device session: \(state)")
     switch state {
     case .started:
       guard enabled else { session?.stop(); return }
@@ -223,6 +244,7 @@ final class OncueWearablesCapture {
     tokens.append(attached.statePublisher.listen { [weak self] state in
       Task { @MainActor in
         guard let self, self.generation == run else { return }
+        self.recordDiagnostic("Speech state: \(state)")
         self.listening = self.enabled && state == .started && self.session?.state == .started
         if self.listening {
           self.startupTimeout?.cancel()
@@ -282,12 +304,16 @@ final class OncueWearablesCapture {
     }
     source = trigger; captureOwnerId = ownerId; pendingPhoto = nil
     descriptionText = String(initialDescription.prefix(10_000)); descriptionSettled = false
+    descriptionComplete = false; unfinishedSpeech = false
     collectingDescription = true
-    scheduleDescriptionEnd(seconds: descriptionText.isEmpty ? 8 : 2)
+    recordDiagnostic("Capture started; waiting for photo and completed description")
+    scheduleDescriptionEnd(seconds: descriptionText.isEmpty ? 20 : 3)
     descriptionLimit = Task { [weak self] in
-      try? await Task.sleep(for: .seconds(30))
-      guard !Task.isCancelled else { return }
-      self?.settleDescription()
+      try? await Task.sleep(for: .seconds(60))
+      guard !Task.isCancelled, let self else { return }
+      self.unfinishedSpeech = true
+      self.recordDiagnostic("Description window expired; keeping report local for review")
+      self.settleDescription()
     }
     capturing = true; photoStopped = false
     acceptingPhoto = true; captureRequested = false; error = nil; phase = "capturing"; publish()
@@ -361,30 +387,39 @@ final class OncueWearablesCapture {
     updated[index].delivery = status; updated[index].deliveryMessage = message
     updated[index].taskIds = taskIds
     try JSONEncoder().encode(updated).write(to: CaptureFiles.manifest, options: .atomic)
-    captures = updated; publish(); return snapshot()
+    captures = updated
+    recordDiagnostic("Report \(id): delivery=\(status), tasks=\(taskIds.count)")
+    publish(); return snapshot()
   }
 
   private func transcription(_ text: String, final: Bool) {
     guard enabled, listening else { return }
+    if final || Date().timeIntervalSince(lastSpeechLog) > 2 {
+      lastSpeechLog = Date()
+      recordDiagnostic("Speech received: final=\(final), characters=\(text.count), collectingDescription=\(collectingDescription)")
+    }
     let action = OncueCaptureCommand.action(text)
     if final, action == .stop {
-      NSLog("[OnCue] Stop command recognized; ending hands-free session")
+      recordDiagnostic("Stop command recognized; ending hands-free session")
       _ = stop(); return
     }
     if collectingDescription {
       // A repeated command is not part of the task description.
       guard action != .capture, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+      unfinishedSpeech = !final
+      descriptionTimeout?.cancel()
       if final {
         descriptionText = String((descriptionText + " " + text).trimmingCharacters(in: .whitespacesAndNewlines).prefix(10_000))
+        recordDiagnostic("Description segment finalized; waiting for a 3-second pause")
+        scheduleDescriptionEnd(seconds: 3)
         publish()
       }
-      scheduleDescriptionEnd(seconds: 2)
       return
     }
     guard final, action == .capture, !capturing, !saving,
       Date().timeIntervalSince(lastCommand) > 3 else { return }
     lastCommand = Date()
-    NSLog("[OnCue] Capture command recognized")
+    recordDiagnostic("Capture command recognized")
     do { try capture(trigger: "voice", initialDescription: OncueCaptureCommand.description(text) ?? "") }
     catch { self.error = error.localizedDescription; publish() }
   }
@@ -401,23 +436,24 @@ final class OncueWearablesCapture {
     guard !descriptionSettled else { return }
     descriptionTimeout?.cancel(); descriptionLimit?.cancel()
     descriptionSettled = true; collectingDescription = false
-    NSLog("[OnCue] Description finalized (%ld characters)", descriptionText.count)
+    descriptionComplete = !unfinishedSpeech && !descriptionText.isEmpty
+    recordDiagnostic("Description ended: characters=\(descriptionText.count), complete=\(descriptionComplete)")
     completeReportIfReady(); publish()
   }
   private func completeReportIfReady() {
     guard descriptionSettled, var saved = pendingPhoto else { return }
     saved.description = descriptionText
     saved.ownerId = captureOwnerId
-    saved.delivery = descriptionText.isEmpty || captureOwnerId == nil ? "local" : "pending"
-    saved.deliveryMessage = descriptionText.isEmpty ? "No description heard. Add one to send this report." : nil
+    saved.delivery = !descriptionComplete || captureOwnerId == nil ? "local" : "pending"
+    saved.deliveryMessage = !descriptionComplete ? "The description was not completed. Review or add it before sending." : nil
     do {
       let updated = [saved] + captures
       try JSONEncoder().encode(updated).write(to: CaptureFiles.manifest, options: .atomic)
       captures = updated; pendingPhoto = nil
-      NSLog("[OnCue] Photo saved; report %@ is %@", saved.id, saved.delivery ?? "local")
-      if !descriptionText.isEmpty {
+      recordDiagnostic("Photo saved; report \(saved.id) is \(saved.delivery ?? "local")")
+      if descriptionComplete {
         soundNotice = CaptureConfirmationDing.shared.play()
-        if let notice = soundNotice { NSLog("[OnCue] %@", notice) }
+        if let notice = soundNotice { recordDiagnostic(notice) }
       }
       finishCapture()
     } catch { captureFailed(error.localizedDescription) }
@@ -432,10 +468,11 @@ final class OncueWearablesCapture {
     publish()
   }
   private func captureFailed(_ message: String) {
-    NSLog("[OnCue] Capture failed: %@", message)
+    recordDiagnostic("Capture failed: \(message)")
     error = message; captureTimeout?.cancel(); finishCapture()
   }
   private func fail(_ message: String) {
+    recordDiagnostic("Session failed: \(message)")
     error = message; _ = stop()
     if session == nil { phase = "error"; publish() }
   }
@@ -500,7 +537,7 @@ private final class CaptureConfirmationDing: NSObject, AVAudioPlayerDelegate {
         return "Report saved, but the confirmation ding could not play."
       }
       let routes = audio.currentRoute.outputs
-      NSLog("[OnCue] Confirmation ding playing via %@", routes.map { $0.portName }.joined(separator: ", "))
+      OncueWearablesCapture.shared.recordDiagnostic("Confirmation ding via " + routes.map { $0.portName }.joined(separator: ", "))
       let bluetooth = routes.contains { [.bluetoothA2DP, .bluetoothHFP, .bluetoothLE].contains($0.portType) }
       return bluetooth ? nil : "The ding is using your iPhone’s current audio output. Select your Meta glasses in Control Center to hear it there."
     } catch {

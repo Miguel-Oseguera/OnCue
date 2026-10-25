@@ -71,8 +71,8 @@ export default function CaptureScreen() {
           “OnCue, capture this task. The projector in room 204 is broken.”
         </Text>
         <Text style={t.body}>
-          Say the capture phrase followed by the task description. Pause for two
-          seconds when finished. OnCue sends the saved photo and your
+          Say the capture phrase followed by the task description. Pause for
+          three seconds when finished. OnCue sends the saved photo and your
           description together to the backend AI. Your glasses microphone stays
           active until you stop listening or the session ends.
         </Text>
@@ -124,6 +124,29 @@ export default function CaptureScreen() {
           <Text style={t.small}>
             The glasses paused this session. Waiting for them to resume; no
             commands are processed while paused.
+          </Text>
+        )}
+      </View>
+      <View style={t.card}>
+        <Text style={t.label}>Live diagnostics</Text>
+        <Text style={t.small}>
+          These events come directly from the glasses controller. Speech content
+          is not logged.
+        </Text>
+        {state.diagnostics?.length ? (
+          state.diagnostics.slice(-15).map((line, index) => (
+            <Text
+              key={`${index}-${line}`}
+              selectable
+              style={[t.small, { fontFamily: "Menlo", fontSize: 10 }]}
+            >
+              {line}
+            </Text>
+          ))
+        ) : (
+          <Text style={t.small}>
+            No events yet. Tap Start hands-free mode to check permissions and
+            speech startup.
           </Text>
         )}
       </View>
