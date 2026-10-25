@@ -42,6 +42,7 @@ export default function OnCueTabs() {
           ),
         }}
       />
+      <Tabs.Screen name="capture" options={{ href: null }} />
       <Tabs.Screen name="explore" options={{ href: null }} />
     </Tabs>
   );

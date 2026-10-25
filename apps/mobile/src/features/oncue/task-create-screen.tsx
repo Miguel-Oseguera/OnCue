@@ -236,11 +236,7 @@ export default function TaskCreateScreen() {
         </View>
       </View>
       {error && <Notice text={error} />}
-      <Button
-        label="Create mock task"
-        onPress={() => void submit()}
-        busy={saving}
-      />
+      <Button label="Create task" onPress={() => void submit()} busy={saving} />
       <Button
         label="Cancel"
         secondary
@@ -248,7 +244,7 @@ export default function TaskCreateScreen() {
         disabled={saving}
       />
       <Text style={[t.small, { textAlign: "center" }]}>
-        Demo only. Nothing is sent to your backend.
+        This task will be saved to your event workspace.
       </Text>
     </Page>
   );

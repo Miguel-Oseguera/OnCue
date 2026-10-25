@@ -8,14 +8,15 @@ import {
   type PropsWithChildren,
 } from "react";
 import {
-  calculateStats,
-  createMockDashboardService,
+  mergeSavedTask,
   type CreateTaskInput,
   type Dashboard,
   type DashboardService,
   type Task,
   type UpdateTaskInput,
 } from "./service";
+
+import { liveDashboardService } from "./live-service";
 
 type Operations = {
   data: Dashboard | null;
@@ -28,13 +29,12 @@ type Operations = {
 };
 const Context = createContext<Operations | null>(null);
 
-/** Shared across dashboard and task routes; unmounting on sign-out clears mocks. */
+/** One authenticated dashboard snapshot shared across all signed-in screens. */
 export function OperationsProvider({
   children,
   service: injectedService,
 }: PropsWithChildren<{ service?: DashboardService }>) {
-  const [defaultService] = useState(createMockDashboardService);
-  const service = injectedService ?? defaultService;
+  const service = injectedService ?? liveDashboardService;
   const [data, setData] = useState<Dashboard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -50,9 +50,13 @@ export function OperationsProvider({
     try {
       const result = await service.getDashboard();
       if (version.current === current) setData(result);
-    } catch {
+    } catch (cause) {
       if (version.current === current)
-        setError("We couldn’t load your tasks. Please try again.");
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "We couldn’t load your tasks. Please try again.",
+        );
     } finally {
       if (version.current === current) setLoading(false);
     }
@@ -69,9 +73,13 @@ export function OperationsProvider({
           setError(null);
         }
       })
-      .catch(() => {
+      .catch((cause: unknown) => {
         if (!cancelled && current === version.current)
-          setError("We couldn’t load your tasks. Please try again.");
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "We couldn’t load your tasks. Please try again.",
+          );
       })
       .finally(() => {
         if (!cancelled && current === version.current) setLoading(false);
@@ -90,13 +98,10 @@ export function OperationsProvider({
     setLoading(false);
     try {
       const task = await action();
-      setData((previous) => {
-        if (!previous) return previous;
-        const tasks = previous.tasks.some((item) => item.id === task.id)
-          ? previous.tasks.map((item) => (item.id === task.id ? task : item))
-          : [task, ...previous.tasks];
-        return { ...previous, tasks, stats: calculateStats(tasks) };
-      });
+      setData((previous) =>
+        previous ? mergeSavedTask(previous, task) : previous,
+      );
+      setError(null);
       return task;
     } finally {
       writing.current = false;

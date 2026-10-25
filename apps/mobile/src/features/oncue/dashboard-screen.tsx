@@ -1,3 +1,4 @@
+import { GlassesConnectionCard } from "../glasses/connection-card";
 import { useState } from "react";
 import {
   ActivityIndicator,
@@ -140,7 +141,7 @@ export default function DashboardScreen() {
           <Text style={s.eyebrow}>OPERATIONS OVERVIEW</Text>
           <View style={s.spacer} />
           <View style={s.demo}>
-            <Text style={s.demoText}>DEMO DATA</Text>
+            <Text style={s.demoText}>WORKSPACE</Text>
           </View>
         </View>
         <View style={{ gap: 8 }}>
@@ -152,6 +153,7 @@ export default function DashboardScreen() {
             One place to keep every moving part moving.
           </Text>
         </View>
+        <GlassesConnectionCard />
         {loading && !data && (
           <ActivityIndicator
             accessibilityLabel="Loading dashboard"
@@ -179,11 +181,9 @@ export default function DashboardScreen() {
               <View style={s.row}>
                 <Text style={s.eventIcon}>◈</Text>
                 <View style={{ flex: 1, gap: 5 }}>
-                  <Text style={s.eyebrow}>SAMPLE EVENT</Text>
-                  <Text style={s.eventName}>OnCue Community Summit</Text>
-                  <Text style={s.small}>
-                    Convention Center · October 25, 2026
-                  </Text>
+                  <Text style={s.eyebrow}>YOUR WORKSPACE</Text>
+                  <Text style={s.eventName}>Event operations</Text>
+                  <Text style={s.small}>Tasks and team activity</Text>
                 </View>
               </View>
               <View style={s.eventFooter}>
@@ -303,6 +303,10 @@ export default function DashboardScreen() {
                 const roster = data.members.filter(
                   (member) => member.teamId === team.id,
                 );
+                const leads = roster
+                  .filter((member) => team.leadIds.includes(member.id))
+                  .map((member) => member.name.split(" ")[0])
+                  .join(", ");
                 return (
                   <View
                     key={team.id}
@@ -317,11 +321,7 @@ export default function DashboardScreen() {
                       <Text style={s.teamName}>{team.name}</Text>
                       <Text style={s.small}>
                         {roster.length} members ·{" "}
-                        {roster
-                          .filter((member) => team.leadIds.includes(member.id))
-                          .map((member) => member.name.split(" ")[0])
-                          .join(", ") || "No lead"}{" "}
-                        leading
+                        {leads ? `${leads} leading` : "No lead assigned"}
                       </Text>
                     </View>
                     <View style={s.count}>
@@ -335,7 +335,7 @@ export default function DashboardScreen() {
               </Text>
             </View>
             <Text style={s.footnote}>
-              Mock preview · Pull to refresh · Tap a task for details
+              Pull to refresh · Tap a task for details
             </Text>
           </>
         )}

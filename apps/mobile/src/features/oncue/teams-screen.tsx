@@ -246,7 +246,7 @@ export function TeamsScreen() {
             onPress={() => void refresh()}
           />
           <Text style={[t.small, { textAlign: "center" }]}>
-            Mock roster · Team membership is read-only in this preview.
+            Team membership is managed by your event team.
           </Text>
         </>
       )}
@@ -308,7 +308,7 @@ export function TeamDetailScreen() {
         <Heading
           section="TEAMS"
           title="Team not found"
-          subtitle="This team isn’t available in the current demo session."
+          subtitle="This team is unavailable in the current workspace."
           back
           backLabel="All teams"
           onBack={backToTeams}
@@ -414,7 +414,7 @@ export function TeamDetailScreen() {
         )}
       </View>
       <Text style={[t.small, { textAlign: "center" }]}>
-        Mock roster · Task changes appear here automatically.
+        Workload reflects the latest dashboard refresh.
       </Text>
     </Page>
   );

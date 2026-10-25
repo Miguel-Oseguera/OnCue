@@ -7,9 +7,63 @@ import {
   View,
 } from "react-native";
 import { dashboardColors as c } from "./dashboard-theme";
-import type { AIReport } from "./report-service";
+import { parseDecision, type AIReport } from "./report-service";
 import { useReports } from "./use-reports";
 import { Button, Notice, t } from "./task-ui";
+
+function DecisionText({ value }: { value: string | null }) {
+  const decision = parseDecision(value);
+  if (!decision)
+    return (
+      <Text selectable style={t.body}>
+        {value ?? "No decision recorded."}
+      </Text>
+    );
+  return (
+    <View style={{ gap: 12 }}>
+      {decision.issueSummary && (
+        <Text selectable style={t.body}>
+          {decision.issueSummary}
+        </Text>
+      )}
+      {(decision.category || decision.urgency) && (
+        <Text style={t.small}>
+          {[
+            decision.category && `Category: ${decision.category}`,
+            decision.urgency && `Urgency: ${decision.urgency}`,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </Text>
+      )}
+      {decision.requiresHumanAttention && (
+        <Text style={[t.label, { color: c.amber }]}>
+          Human attention requested
+        </Text>
+      )}
+      {Boolean(decision.recommendedActions?.length) && (
+        <View style={{ gap: 7 }}>
+          <Text style={t.label}>Recommended actions</Text>
+          {decision.recommendedActions?.map((action, index) => (
+            <Text selectable key={index} style={t.body}>
+              • {action}
+            </Text>
+          ))}
+        </View>
+      )}
+      {Boolean(decision.missingInformation?.length) && (
+        <View style={{ gap: 7 }}>
+          <Text style={t.label}>Missing information</Text>
+          {decision.missingInformation?.map((item, index) => (
+            <Text selectable key={index} style={t.body}>
+              • {item}
+            </Text>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
 
 /** Read-only presentation shared by task reports and the unlinked-report inbox. */
 export function AIReportContent({ report }: { report: AIReport }) {
@@ -19,7 +73,7 @@ export function AIReportContent({ report }: { report: AIReport }) {
   return (
     <View style={{ gap: 16 }}>
       <View style={t.row}>
-        <Text style={[t.eyebrow, { flex: 1 }]}>WHAT THE AI REPORTED</Text>
+        <Text style={[t.eyebrow, { flex: 1 }]}>REPORT TEXT</Text>
         <Text style={s.unverified}>UNVERIFIED</Text>
       </View>
       <Text selectable style={t.body}>
@@ -27,9 +81,7 @@ export function AIReportContent({ report }: { report: AIReport }) {
       </Text>
       <View style={{ gap: 6 }}>
         <Text style={t.eyebrow}>AI DECISION</Text>
-        <Text selectable style={t.body}>
-          {report.decision ?? "No decision recorded."}
-        </Text>
+        <DecisionText value={report.decision} />
       </View>
       <View style={{ gap: 6 }}>
         <Text style={t.eyebrow}>AI ACTION</Text>
@@ -56,7 +108,7 @@ export function AIReportContent({ report }: { report: AIReport }) {
               </View>
             ))}
             <Text style={t.small}>
-              No original recording is available in this mock preview.
+              Original recordings are not included in this response.
             </Text>
           </>
         ) : (
@@ -176,7 +228,7 @@ export function TaskAIReports({ taskId }: { taskId: string }) {
                 </View>
               ))}
               <Text style={t.small}>
-                Mock reports · Reading them does not change this task.
+                Reading reports does not change this task.
               </Text>
             </>
           )}

@@ -17,7 +17,7 @@ Pod::Spec.new do |s|
   s,
   url: 'https://github.com/facebook/meta-wearables-dat-ios',
   requirement: { kind: 'exactVersion', version: '1.0.0' },
-  products: ['MWDATCore']
+  products: ['MWDATCore', 'MWDATCamera', 'MWDATSpeech']
 )
 
   # Swift/Objective-C compatibility

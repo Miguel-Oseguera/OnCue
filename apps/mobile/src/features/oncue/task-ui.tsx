@@ -174,7 +174,6 @@ export function Heading({
       <View style={t.row}>
         <Text style={t.eyebrow}>ONCUE / {section}</Text>
         <View style={{ flex: 1 }} />
-        <Text style={t.demo}>MOCK PREVIEW</Text>
       </View>
       <Text style={t.title}>{title}</Text>
       <Text style={t.subtitle}>{subtitle}</Text>

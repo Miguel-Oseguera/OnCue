@@ -1,10 +1,7 @@
-import type { AppType } from "backend";
-import { hc } from "hono/client";
 import { Platform } from "react-native";
-
 import { authClient, backendURL } from "./auth-client";
 
-// Browsers use their cookie jar. Native API calls forward the SecureStore cookie.
+/** Preserve the existing Better Auth cookie handling on native and web. */
 const authenticatedFetch: typeof fetch = async (input, init) => {
   const headers = new Headers(init?.headers);
   if (Platform.OS !== "web") {
@@ -18,4 +15,49 @@ const authenticatedFetch: typeof fetch = async (input, init) => {
   });
 };
 
-export const api = hc<AppType>(backendURL, { fetch: authenticatedFetch });
+/** Transport returns unknown; feature adapters validate data before rendering it.
+ * No generated backend build is required by the mobile application.
+ */
+export async function requestJSON(
+  path: string,
+  init: RequestInit = {},
+): Promise<unknown> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await authenticatedFetch(
+      new URL(path, backendURL).toString(),
+      { ...init, signal: controller.signal },
+    );
+    if (response.status === 401) {
+      await authClient.getSession().catch(() => undefined);
+      throw new Error("Your session has expired. Please sign in again.");
+    }
+    const body: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      const message =
+        body &&
+        typeof body === "object" &&
+        "error" in body &&
+        typeof body.error === "string"
+          ? body.error
+          : `Request failed (${response.status}). Please try again.`;
+      throw new Error(message);
+    }
+    if (body === null)
+      throw new Error(
+        "The server returned an empty response. Please try again.",
+      );
+    return body;
+  } catch (error) {
+    if (controller.signal.aborted)
+      throw new Error("The server took too long to respond. Please try again.");
+    if (error instanceof TypeError)
+      throw new Error(
+        "Unable to reach OnCue. Check your connection and that the backend is running.",
+      );
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}

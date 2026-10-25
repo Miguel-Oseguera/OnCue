@@ -1,2 +1,2 @@
-/** Dashboard and task screens consume the same session-scoped mock state. */
+/** Dashboard and task screens consume the same authenticated workspace state. */
 export { useOperations as useDashboard } from "./operations-provider";
