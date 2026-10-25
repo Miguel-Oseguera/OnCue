@@ -36,8 +36,12 @@ export interface Dashboard {
     urgent: number;
   };
 }
+export type CreateTaskInput = Omit<Task, "id" | "status" | "createdAt">;
+export type UpdateTaskInput = Partial<Pick<Task, "status" | "assigneeIds">>;
 export interface DashboardService {
   getDashboard(): Promise<Dashboard>;
+  createTask(input: CreateTaskInput): Promise<Task>;
+  updateTask(id: string, input: UpdateTaskInput): Promise<Task>;
 }
 export function calculateStats(tasks: Task[]): Dashboard["stats"] {
   return {
@@ -141,13 +145,97 @@ const tasks: Task[] = [
     createdAt: "2026-10-25T07:30:00Z",
   },
 ];
-/** Replace this implementation with an authenticated adapter when APIs are approved.
- * Keep fixtures private and return fresh data so consumers cannot mutate the seed.
+function copy<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/** Each signed-in UI session gets its own in-memory store. Reloading resets it.
+ * A future API adapter implements this interface; screens never touch fixtures.
  */
-export const mockDashboardService: DashboardService = {
-  async getDashboard() {
-    return JSON.parse(
-      JSON.stringify({ tasks, teams, members, stats: calculateStats(tasks) }),
-    ) as Dashboard;
-  },
-};
+export function createMockDashboardService(): DashboardService {
+  let currentTasks = copy(tasks);
+  let nextId = 1;
+  function validateAssignees(ids: string[], slots: number) {
+    if (new Set(ids).size !== ids.length)
+      throw new Error("Choose each member only once.");
+    if (ids.length > slots)
+      throw new Error("The task has no more assignment slots.");
+    if (ids.some((id) => !members.some((member) => member.id === id)))
+      throw new Error("Choose a member from the roster.");
+  }
+  return {
+    async getDashboard() {
+      return copy({
+        tasks: currentTasks,
+        teams,
+        members,
+        stats: calculateStats(currentTasks),
+      });
+    },
+    async createTask(input) {
+      const title = input.title.trim();
+      const description = input.description.trim();
+      const location = input.location?.trim() || null;
+      if (!title || title.length > 200)
+        throw new Error("Use a title between 1 and 200 characters.");
+      if (description.length > 10000)
+        throw new Error("Keep the description under 10,000 characters.");
+      if (location && location.length > 500)
+        throw new Error("Keep the location under 500 characters.");
+      if (!["low", "medium", "high", "urgent"].includes(input.priority))
+        throw new Error("Choose a valid priority.");
+      if (
+        !Number.isInteger(input.slots) ||
+        input.slots < 1 ||
+        input.slots > 100
+      )
+        throw new Error("Choose between 1 and 100 assignment slots.");
+      if (
+        input.teamId !== null &&
+        !teams.some((team) => team.id === input.teamId)
+      )
+        throw new Error("Choose a team from the roster.");
+      validateAssignees(input.assigneeIds, input.slots);
+      const task: Task = {
+        ...copy(input),
+        title,
+        description,
+        location,
+        id: `mock_task_${nextId++}`,
+        status: "open",
+        createdAt: new Date().toISOString(),
+      };
+      currentTasks = [task, ...currentTasks];
+      return copy(task);
+    },
+    async updateTask(id, input) {
+      const existing = currentTasks.find((task) => task.id === id);
+      if (!existing) throw new Error("This task is no longer available.");
+      if (
+        Object.keys(input).length === 0 ||
+        Object.keys(input).some(
+          (key) => key !== "status" && key !== "assigneeIds",
+        )
+      )
+        throw new Error("Update a task's status or assignments.");
+      if (
+        input.status !== undefined &&
+        !["open", "in_progress", "completed"].includes(input.status)
+      )
+        throw new Error("Choose a valid status.");
+      const assigneeIds = input.assigneeIds ?? existing.assigneeIds;
+      validateAssignees(assigneeIds, existing.slots);
+      const updated = {
+        ...existing,
+        status: input.status ?? existing.status,
+        assigneeIds: [...assigneeIds],
+      };
+      currentTasks = currentTasks.map((task) =>
+        task.id === id ? updated : task,
+      );
+      return copy(updated);
+    },
+  };
+}
+
+export const mockDashboardService = createMockDashboardService();
