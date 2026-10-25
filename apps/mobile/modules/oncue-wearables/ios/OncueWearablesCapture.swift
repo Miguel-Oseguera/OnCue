@@ -64,6 +64,10 @@ final class OncueWearablesCapture {
   static let shared = OncueWearablesCapture()
   private var session: DeviceSession?
   private var speech: Speech?
+  private var speechResetRequested = false
+  private var speechResetting = false
+  private var speechResetTask: Task<Void, Never>?
+  private var completionCuePending = false
   private var debugStartAttempted = false
   private var photoOnlySession = false
   private var camera: Camera?
@@ -205,6 +209,9 @@ final class OncueWearablesCapture {
   func stop() -> [String: Any] {
     settleDescription()
     enabled = false; listening = false
+    speechResetTask?.cancel(); speechResetTask = nil
+    speechResetRequested = false; speechResetting = false; completionCuePending = false
+    CaptureConfirmationDing.shared.endSession()
     startupTimeout?.cancel(); captureTimeout?.cancel(); captureHardDeadline?.cancel()
     if session != nil {
       phase = "stopping"; speech?.stop(); photo?.stop(); session?.stop()
@@ -289,7 +296,8 @@ final class OncueWearablesCapture {
           return
         }
         if speech == nil { try attachSpeech() }
-        listening = speech?.state == .started
+        if speechResetRequested { rearmSpeechAfterCapture() }
+        listening = !speechResetting && speech?.state == .started
         phase = capturing ? "capturing" : (listening ? "listening" : "starting")
       } catch { fail(error.localizedDescription); return }
     case .paused:
@@ -316,9 +324,15 @@ final class OncueWearablesCapture {
         self.recordDiagnostic("Speech state: \(state)")
         self.listening = self.enabled && state == .started && self.session?.state == .started
         if self.listening {
+          self.speechResetRequested = false; self.speechResetting = false
           self.startupTimeout?.cancel()
+          if self.completionCuePending {
+            self.completionCuePending = false
+            self.recordDiagnostic("Ready for another capture command")
+            self.soundNotice = CaptureConfirmationDing.shared.play(keepSessionActive: true)
+          }
           self.phase = self.capturing ? "capturing" : "listening"
-        } else if self.enabled && state == .stopped && self.session?.state == .started {
+        } else if self.enabled && !self.speechResetting && !self.speechResetRequested && state == .stopped && self.session?.state == .started {
           self.fail("Speech stopped. Start hands-free mode again when ready."); return
         }
         self.publish()
@@ -340,7 +354,10 @@ final class OncueWearablesCapture {
   }
 
   private func capture(trigger: String, initialDescription: String = "") throws {
-    guard enabled, session?.state == .started, !capturing, photoStopped else { return }
+    guard enabled, session?.state == .started, !capturing, photoStopped else {
+      recordDiagnostic("Capture deferred: enabled=\(enabled), capturing=\(capturing), photoStopped=\(photoStopped)")
+      return
+    }
     guard let session else { return }
     if camera == nil {
       guard let attached = try session.addCamera() else { throw CaptureFailure("The glasses camera is not ready.") }
@@ -515,7 +532,7 @@ final class OncueWearablesCapture {
     if action == .capture, !collectingDescription, !capturing, !saving, !acknowledgedSpeechCommand {
       acknowledgedSpeechCommand = true
       recordDiagnostic("Capture command heard; playing acknowledgement tone")
-      soundNotice = CaptureConfirmationDing.shared.play(acknowledgement: true)
+      soundNotice = CaptureConfirmationDing.shared.play(acknowledgement: true, keepSessionActive: enabled)
     }
     if final { acknowledgedSpeechCommand = false }
     if final { recordDiagnostic("Final speech matched capture=\(action == .capture), stop=\(action == .stop)") }
@@ -571,10 +588,7 @@ final class OncueWearablesCapture {
       try JSONEncoder().encode(updated).write(to: CaptureFiles.manifest, options: .atomic)
       captures = updated; pendingPhoto = nil
       recordDiagnostic("Photo saved; report \(saved.id) is \(saved.delivery ?? "local")")
-      if descriptionComplete {
-        soundNotice = CaptureConfirmationDing.shared.play()
-        if let notice = soundNotice { recordDiagnostic(notice) }
-      }
+      completionCuePending = descriptionComplete
       finishCapture()
     } catch { captureFailed(error.localizedDescription) }
   }
@@ -587,6 +601,39 @@ final class OncueWearablesCapture {
     else if session == nil { phase = error == nil ? "off" : "error" }
     publish()
     if photoOnlySession { _ = stop() }
+    else if enabled { rearmSpeechAfterCapture() }
+  }
+
+  private func rearmSpeechAfterCapture() {
+    speechResetRequested = true
+    guard enabled, session?.state == .started, let speech, !speechResetting else { return }
+    speechResetting = true; listening = false; phase = "starting"
+    acknowledgedSpeechCommand = false
+    recordDiagnostic("Re-arming speech for next capture")
+    let run = generation
+    speechResetTask?.cancel()
+    speechResetTask = Task { [weak self] in
+      if speech.state != .stopped { speech.stop() }
+      let deadline = Date().addingTimeInterval(5)
+      while speech.state != .stopped, Date() < deadline, !Task.isCancelled {
+        try? await Task.sleep(for: .milliseconds(50))
+      }
+      guard !Task.isCancelled, let self, self.generation == run, self.enabled else { return }
+      guard self.session?.state == .started else {
+        self.speechResetting = false; return // Session pause is resumed by the SDK.
+      }
+      guard speech.state == .stopped else {
+        self.speechResetting = false
+        self.fail("The speech recognizer did not reset. Start hands-free mode again."); return
+      }
+      speech.start()
+      self.startupTimeout?.cancel()
+      self.startupTimeout = Task { [weak self] in
+        try? await Task.sleep(for: .seconds(15))
+        guard !Task.isCancelled, let self, self.generation == run, self.enabled, !self.listening else { return }
+        self.fail("Speech did not resume after capture. Start hands-free mode again.")
+      }
+    }
   }
   private func captureFailed(_ message: String) {
     recordDiagnostic("Capture failed: \(message)")
@@ -598,8 +645,11 @@ final class OncueWearablesCapture {
     if session == nil { phase = "error"; publish() }
   }
   private func releaseSession() {
+    CaptureConfirmationDing.shared.endSession()
     startupTimeout?.cancel(); captureTimeout?.cancel(); captureHardDeadline?.cancel()
     settleDescription()
+    speechResetTask?.cancel(); speechResetTask = nil
+    speechResetRequested = false; speechResetting = false; completionCuePending = false
     generation = UUID(); enabled = false; listening = false; capturing = false; acceptingPhoto = false
     let oldTokens = tokens; tokens = []
     Task { for token in oldTokens { await token.cancel() } }
@@ -614,6 +664,7 @@ private final class CaptureConfirmationDing: NSObject, AVAudioPlayerDelegate {
   static let shared = CaptureConfirmationDing()
   private var player: AVAudioPlayer?
   private var ownsPlaybackSession = false
+  private var holdPlaybackSession = false
   private static let tone: Data = {
     let sampleRate = 22050
     let count = Int(Double(sampleRate) * 0.38)
@@ -642,7 +693,8 @@ private final class CaptureConfirmationDing: NSObject, AVAudioPlayerDelegate {
     return data
   }()
 
-  func play(acknowledgement: Bool = false) -> String? {
+  func play(acknowledgement: Bool = false, keepSessionActive: Bool = false) -> String? {
+    holdPlaybackSession = keepSessionActive
     do {
       let audio = AVAudioSession.sharedInstance()
       // Do not replace or deactivate an existing recording/communication session.
@@ -677,7 +729,12 @@ private final class CaptureConfirmationDing: NSObject, AVAudioPlayerDelegate {
   }
   private func finish(_ completed: AVAudioPlayer) {
     guard player === completed else { return }
-    player = nil; releasePlaybackSession()
+    player = nil
+    if !holdPlaybackSession { releasePlaybackSession() }
+  }
+  func endSession() {
+    player?.stop(); player = nil; holdPlaybackSession = false
+    releasePlaybackSession()
   }
   private func releasePlaybackSession() {
     guard ownsPlaybackSession else { return }

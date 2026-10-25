@@ -1,0 +1,17 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": [
+          "5WZ2SK9A54.com.oncue.sierra.dev"
+        ],
+        "components": [
+          {
+            "/": "/oncue/*",
+            "comment": "OnCue launch and Meta callback links only."
+          }
+        ]
+      }
+    ]
+  }
+}
