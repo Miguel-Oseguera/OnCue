@@ -39,10 +39,11 @@ The application tables follow `Schema.drawio`:
 
 - Events have a name, location, and an array of calendar dates.
 - Members belong to an event. Their name and profile picture are independent of
-  Better Auth users. Lead and volunteer flags describe their event roles.
+  Better Auth users.
 - Event owners use `event_owner`. Team membership uses `team_member`, whose
-  `is_lead` flag identifies each team's leads. Tasks use `task_assignee` to
-  support multiple assigned members. Each join table prevents duplicate pairs.
+  `role` enum supports `lead`, `member`, and `volunteer`. Tasks have a `slots`
+  count and use `task_assignee` to support multiple assigned members. Each join
+  table prevents duplicate pairs.
 - Schedule entries have a generated ID and a timezone-aware start time.
 - Media and AI activity belong to an event and can optionally reference a task.
   Photo and video/audio fields store file URLs or storage keys. Transcripts,
@@ -59,6 +60,25 @@ shared event rule.
 The migration runner uses the matching direct connection over WebSockets. If
 `DATABASE_URL_UNPOOLED` points at a different database branch, it derives the
 direct URL from `DATABASE_URL` instead. Migration history is stored by Drizzle.
+
+## Demo data
+
+After migrations, run `pnpm --filter backend db:seed` to seed the configured
+`DATABASE_URL`. Use your development branch.
+
+The script uses [`drizzle-seed`](https://orm.drizzle.team/docs/seed-overview)
+with seed `42` and generator version `2`. It creates one OnCue Demo Hackathon on
+October 24-25, 2026, with four generated members, two teams, three schedule
+entries, four tasks, an event owner, team memberships, task assignments, and
+sample transcripts and AI activity. Drizzle generates IDs and foreign-key
+relationships. Using one event keeps all related records in that event.
+Team membership roles use the schema's enum values. Tasks have one to four slots.
+
+The seed runs in one transaction. If the demo event already exists, the script
+skips seeding and preserves existing values. It does not reset tables or repair
+partially deleted demo data. Better Auth tables are excluded, so this script
+does not create a login. The event ID is
+`0c0e0000-0000-4000-8000-000000000001`.
 
 ## API
 
@@ -78,6 +98,9 @@ requests use `credentials: 'include'`.
 development database. It creates a disposable account, verifies password hashing,
 origin checks, protected access, session restoration, sign-in, and revocation on
 sign-out. It removes that account and its related records afterward.
+
+The seed test checks repeat runs, preserved edits, membership roles, positive task
+slots, and relationships within the demo event. It rolls back all verification changes.
 
 `pnpm --filter backend build` also emits API declarations used by the mobile
 client. Run it before checking mobile types on a fresh checkout. The root

@@ -2,18 +2,19 @@ export * from "./auth-schema.js";
 
 import { relations } from "drizzle-orm";
 import {
-  boolean,
   date,
   index,
   pgTable,
   primaryKey,
+  integer,
   text,
   timestamp,
+  pgEnum,
   uuid,
 } from "drizzle-orm/pg-core";
 
 export const event = pgTable("event", {
-  eventId: uuid("event_id").defaultRandom().primaryKey(),
+  id: uuid("id").defaultRandom().primaryKey(),
   name: text("name").notNull(),
   location: text("location").notNull(),
   dates: date("dates").array().notNull(),
@@ -22,14 +23,12 @@ export const event = pgTable("event", {
 export const member = pgTable(
   "member",
   {
-    memberId: uuid("member_id").defaultRandom().primaryKey(),
+    id: uuid("id").defaultRandom().primaryKey(),
     eventId: uuid("event_id")
       .notNull()
-      .references(() => event.eventId, { onDelete: "cascade" }),
+      .references(() => event.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     profilePic: text("profile_pic"),
-    isLead: boolean("is_lead").default(false).notNull(),
-    isVolunteer: boolean("is_volunteer").default(false).notNull(),
   },
   (table) => [index("member_event_id_idx").on(table.eventId)],
 );
@@ -39,10 +38,10 @@ export const eventOwner = pgTable(
   {
     eventId: uuid("event_id")
       .notNull()
-      .references(() => event.eventId, { onDelete: "cascade" }),
+      .references(() => event.id, { onDelete: "cascade" }),
     memberId: uuid("member_id")
       .notNull()
-      .references(() => member.memberId, { onDelete: "cascade" }),
+      .references(() => member.id, { onDelete: "cascade" }),
   },
   (table) => [
     primaryKey({ columns: [table.eventId, table.memberId] }),
@@ -53,26 +52,27 @@ export const eventOwner = pgTable(
 export const team = pgTable(
   "team",
   {
-    teamId: uuid("team_id").defaultRandom().primaryKey(),
+    id: uuid("id").defaultRandom().primaryKey(),
     eventId: uuid("event_id")
       .notNull()
-      .references(() => event.eventId, { onDelete: "cascade" }),
+      .references(() => event.id, { onDelete: "cascade" }),
     teamName: text("team_name").notNull(),
   },
   (table) => [index("team_event_id_idx").on(table.eventId)],
 );
 
-// Team leads are members of that team, with isLead set on their membership.
+// Each member's role belongs to their team membership.
+export const roleEnum = pgEnum("role", ["lead", "member", "volunteer"]);
 export const teamMember = pgTable(
   "team_member",
   {
     teamId: uuid("team_id")
       .notNull()
-      .references(() => team.teamId, { onDelete: "cascade" }),
+      .references(() => team.id, { onDelete: "cascade" }),
     memberId: uuid("member_id")
       .notNull()
-      .references(() => member.memberId, { onDelete: "cascade" }),
-    isLead: boolean("is_lead").default(false).notNull(),
+      .references(() => member.id, { onDelete: "cascade" }),
+    role: roleEnum("role"),
   },
   (table) => [
     primaryKey({ columns: [table.teamId, table.memberId] }),
@@ -83,10 +83,10 @@ export const teamMember = pgTable(
 export const schedule = pgTable(
   "schedule",
   {
-    scheduleId: uuid("schedule_id").defaultRandom().primaryKey(),
+    id: uuid("id").defaultRandom().primaryKey(),
     eventId: uuid("event_id")
       .notNull()
-      .references(() => event.eventId, { onDelete: "cascade" }),
+      .references(() => event.id, { onDelete: "cascade" }),
     activity: text("activity").notNull(),
     room: text("room").notNull(),
     startTime: timestamp("start_time", { withTimezone: true }).notNull(),
@@ -97,10 +97,11 @@ export const schedule = pgTable(
 export const task = pgTable(
   "task",
   {
-    taskId: uuid("task_id").defaultRandom().primaryKey(),
+    id: uuid("id").defaultRandom().primaryKey(),
     eventId: uuid("event_id")
       .notNull()
-      .references(() => event.eventId, { onDelete: "cascade" }),
+      .references(() => event.id, { onDelete: "cascade" }),
+    slots: integer("slots").notNull().default(0),
     assignment: text("assignment").notNull(),
     priority: text("priority").notNull(),
     status: text("status").notNull(),
@@ -113,10 +114,10 @@ export const taskAssignee = pgTable(
   {
     taskId: uuid("task_id")
       .notNull()
-      .references(() => task.taskId, { onDelete: "cascade" }),
+      .references(() => task.id, { onDelete: "cascade" }),
     memberId: uuid("member_id")
       .notNull()
-      .references(() => member.memberId, { onDelete: "cascade" }),
+      .references(() => member.id, { onDelete: "cascade" }),
   },
   (table) => [
     primaryKey({ columns: [table.taskId, table.memberId] }),
@@ -131,8 +132,8 @@ export const media = pgTable(
     mediaId: uuid("media_id").defaultRandom().primaryKey(),
     eventId: uuid("event_id")
       .notNull()
-      .references(() => event.eventId, { onDelete: "cascade" }),
-    taskId: uuid("task_id").references(() => task.taskId, {
+      .references(() => event.id, { onDelete: "cascade" }),
+    taskId: uuid("task_id").references(() => task.id, {
       onDelete: "set null",
     }),
     photo: text("photo"),
@@ -151,8 +152,8 @@ export const aiActivity = pgTable(
     reportId: uuid("report_id").defaultRandom().primaryKey(),
     eventId: uuid("event_id")
       .notNull()
-      .references(() => event.eventId, { onDelete: "cascade" }),
-    taskId: uuid("task_id").references(() => task.taskId, {
+      .references(() => event.id, { onDelete: "cascade" }),
+    taskId: uuid("task_id").references(() => task.id, {
       onDelete: "set null",
     }),
     report: text("report").notNull(),
@@ -176,7 +177,7 @@ export const eventRelations = relations(event, ({ many }) => ({
 }));
 
 export const memberRelations = relations(member, ({ one, many }) => ({
-  event: one(event, { fields: [member.eventId], references: [event.eventId] }),
+  event: one(event, { fields: [member.eventId], references: [event.id] }),
   ownedEvents: many(eventOwner),
   teams: many(teamMember),
   assignments: many(taskAssignee),
@@ -185,58 +186,58 @@ export const memberRelations = relations(member, ({ one, many }) => ({
 export const eventOwnerRelations = relations(eventOwner, ({ one }) => ({
   event: one(event, {
     fields: [eventOwner.eventId],
-    references: [event.eventId],
+    references: [event.id],
   }),
   member: one(member, {
     fields: [eventOwner.memberId],
-    references: [member.memberId],
+    references: [member.id],
   }),
 }));
 
 export const teamRelations = relations(team, ({ one, many }) => ({
-  event: one(event, { fields: [team.eventId], references: [event.eventId] }),
+  event: one(event, { fields: [team.eventId], references: [event.id] }),
   members: many(teamMember),
 }));
 
 export const teamMemberRelations = relations(teamMember, ({ one }) => ({
-  team: one(team, { fields: [teamMember.teamId], references: [team.teamId] }),
+  team: one(team, { fields: [teamMember.teamId], references: [team.id] }),
   member: one(member, {
     fields: [teamMember.memberId],
-    references: [member.memberId],
+    references: [member.id],
   }),
 }));
 
 export const scheduleRelations = relations(schedule, ({ one }) => ({
   event: one(event, {
     fields: [schedule.eventId],
-    references: [event.eventId],
+    references: [event.id],
   }),
 }));
 
 export const taskRelations = relations(task, ({ one, many }) => ({
-  event: one(event, { fields: [task.eventId], references: [event.eventId] }),
+  event: one(event, { fields: [task.eventId], references: [event.id] }),
   assignees: many(taskAssignee),
   media: many(media),
   aiActivity: many(aiActivity),
 }));
 
 export const taskAssigneeRelations = relations(taskAssignee, ({ one }) => ({
-  task: one(task, { fields: [taskAssignee.taskId], references: [task.taskId] }),
+  task: one(task, { fields: [taskAssignee.taskId], references: [task.id] }),
   member: one(member, {
     fields: [taskAssignee.memberId],
-    references: [member.memberId],
+    references: [member.id],
   }),
 }));
 
 export const mediaRelations = relations(media, ({ one }) => ({
-  event: one(event, { fields: [media.eventId], references: [event.eventId] }),
-  task: one(task, { fields: [media.taskId], references: [task.taskId] }),
+  event: one(event, { fields: [media.eventId], references: [event.id] }),
+  task: one(task, { fields: [media.taskId], references: [task.id] }),
 }));
 
 export const aiActivityRelations = relations(aiActivity, ({ one }) => ({
   event: one(event, {
     fields: [aiActivity.eventId],
-    references: [event.eventId],
+    references: [event.id],
   }),
-  task: one(task, { fields: [aiActivity.taskId], references: [task.taskId] }),
+  task: one(task, { fields: [aiActivity.taskId], references: [task.id] }),
 }));
