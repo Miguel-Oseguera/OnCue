@@ -15,6 +15,13 @@
       "when": 1792876340456,
       "tag": "0001_striped_the_liberteens",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792895246319,
+      "tag": "0002_neat_owl",
+      "breakpoints": true
     }
   ]
 }
