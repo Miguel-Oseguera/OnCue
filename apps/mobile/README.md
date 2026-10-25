@@ -174,3 +174,39 @@ On hardware, verify permission denial/retry, repeated voice captures, button cap
 leaving the capture screen, stop while starting, disconnect/reconnect, persistence
 across relaunch, and locked-phone capture. No live glasses capture is verified by
 the unit checks or native build alone.
+
+
+### Voice start and stop
+
+With a configured Meta integration, say **“Hey Meta, start OnCue”** to launch or
+foreground OnCue and start hands-free mode. Say **“OnCue, stop listening”** to stop
+the sensor session, including during photo capture or the capture cooldown. Once
+stopped, custom OnCue speech cannot restart itself; use the Meta launch command or
+the Start button. Stop never starts listening again automatically.
+
+The native invocation stream is initialized at app launch and follows the connected
+glasses independently of sensor sessions. Every received LaunchApp is acknowledged
+once. Cold launch waits up to 15 seconds for the existing signed-in session to be
+restored; signed-out launches fail without starting sensors. The authenticated UI
+opens the capture screen for each new invocation. An accepted start response means
+session startup was requested; the screen reports actual Speech readiness/errors.
+The stream uses Meta's invocation channel, not a continuously active OnCue mic.
+
+**Required Meta-side setup (not supplied by the local code):**
+
+- In Wearables Developer Center, add the iOS mobile app bundle identifier
+  `com.oncue.sierra.dev` and set its spoken app name to **OnCue**.
+- Save the configuration, then create a **new integration version**. The DAT 1.0
+  guide says this includes Voice Invocation permission; there is no separate toggle.
+- Make the configured development/beta integration available to your testing account
+  and finish registration/permission approval in Meta AI. The current local build
+  still uses Developer Mode identifiers; do not assume its `MetaAppID: 0` creates
+  a routable voice app. Use verified project configuration when required.
+
+Reference: https://wearables.developer.meta.com/docs/develop/dat/voice-invocations/
+
+Hardware test: start by voice while OnCue is open, then while backgrounded/cold;
+confirm the capture page opens and reaches Listening. Capture a photo, stop by
+voice, and confirm another capture phrase does nothing. Start through Meta again.
+Also test stop during transfer, handoff/removal, denied permissions, and signed-out
+launch. SDK build and command tests do not verify Meta's app-name routing.

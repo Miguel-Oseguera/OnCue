@@ -4,11 +4,12 @@ import ExpoModulesCore
 public class OncueWearablesModule: Module {
   private var observerID: UUID?
   private var captureObserverID: UUID?
+  private var voiceObserverID: UUID?
 
   public func definition() -> ModuleDefinition {
     Name("OncueWearables")
-    Constant("bridgeVersion") { 2 }
-    Events("onConnectionChange", "onCaptureChange")
+    Constant("bridgeVersion") { 3 }
+    Events("onConnectionChange", "onCaptureChange", "onVoiceLaunchChange")
 
     AsyncFunction("getStatus") { () async -> [String: Any] in
       await MainActor.run { OncueWearablesConnection.shared.status() }
@@ -48,8 +49,36 @@ public class OncueWearablesModule: Module {
       }
     }
     OnStopObserving("onCaptureChange") { [weak self] in self?.removeCaptureObserver() }
-    OnAppContextDestroys { Task { @MainActor in _ = OncueWearablesCapture.shared.stop() } }
-    OnDestroy { [weak self] in self?.removeObserver(); self?.removeCaptureObserver() }
+    AsyncFunction("setVoiceLaunchAllowed") { (allowed: Bool) async in
+      await MainActor.run { OncueWearablesVoiceLaunch.shared.setAllowed(allowed) }
+    }
+    AsyncFunction("getVoiceLaunchState") { () async -> [String: Any] in
+      await MainActor.run { OncueWearablesVoiceLaunch.shared.snapshot() }
+    }
+    OnStartObserving("onVoiceLaunchChange") { [weak self] in
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        if let id = self.voiceObserverID { OncueWearablesVoiceLaunch.shared.removeObserver(id) }
+        self.voiceObserverID = OncueWearablesVoiceLaunch.shared.addObserver { [weak self] state in
+          self?.sendEvent("onVoiceLaunchChange", state)
+        }
+      }
+    }
+    OnStopObserving("onVoiceLaunchChange") { [weak self] in self?.removeVoiceObserver() }
+    OnAppBecomesActive { Task { @MainActor in OncueWearablesVoiceLaunch.shared.refresh() } }
+    OnAppContextDestroys { Task { @MainActor in
+      OncueWearablesVoiceLaunch.shared.setAllowed(nil)
+      _ = OncueWearablesCapture.shared.stop()
+    } }
+    OnDestroy { [weak self] in self?.removeObserver(); self?.removeCaptureObserver(); self?.removeVoiceObserver() }
+  }
+
+  private func removeVoiceObserver() {
+    Task { @MainActor [self] in
+      guard let id = self.voiceObserverID else { return }
+      OncueWearablesVoiceLaunch.shared.removeObserver(id)
+      self.voiceObserverID = nil
+    }
   }
 
   private func removeCaptureObserver() {

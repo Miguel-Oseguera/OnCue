@@ -1,5 +1,6 @@
 import { NativeModule, requireOptionalNativeModule } from "expo";
 import type {
+  VoiceLaunchState,
   CaptureState,
   GlassesEvents,
   GlassesStatus,
@@ -7,6 +8,8 @@ import type {
 
 export declare class ConnectionModule extends NativeModule<GlassesEvents> {
   readonly bridgeVersion?: number;
+  setVoiceLaunchAllowed(allowed: boolean): Promise<void>;
+  getVoiceLaunchState(): Promise<VoiceLaunchState>;
   getCaptureState(): Promise<CaptureState>;
   startHandsFree(): Promise<CaptureState>;
   stopHandsFree(): Promise<CaptureState>;

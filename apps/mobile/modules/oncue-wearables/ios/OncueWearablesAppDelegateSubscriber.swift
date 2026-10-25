@@ -7,7 +7,12 @@ public class OncueWearablesAppDelegateSubscriber: ExpoAppDelegateSubscriber {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
   ) -> Bool {
-    Task { @MainActor in try? OncueWearablesConnection.shared.configure() }
+    Task { @MainActor in
+      do {
+        try OncueWearablesConnection.shared.configure()
+        OncueWearablesVoiceLaunch.shared.configure()
+      } catch { /* Connection status exposes initialization errors. */ }
+    }
     return true
   }
 

@@ -1,3 +1,4 @@
+import { VoiceLaunchStatus } from "./voice-launch-status";
 import { useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { Image } from "expo-image";
@@ -50,6 +51,7 @@ export default function CaptureScreen() {
         onBack={() => router.navigate("/")}
       />
       <View style={t.card}>
+        <VoiceLaunchStatus />
         <View style={t.row}>
           <View
             style={{

@@ -16,6 +16,7 @@ export type GlassesStatus = {
   error: string | null;
 };
 export type GlassesEvents = {
+  onVoiceLaunchChange: (status: VoiceLaunchState) => void;
   onCaptureChange: (status: CaptureState) => void;
   onConnectionChange: (status: GlassesStatus) => void;
 };
@@ -44,4 +45,10 @@ export type CaptureState = {
     | "error";
   error: string | null;
   photos: CapturedPhoto[];
+};
+
+export type VoiceLaunchState = {
+  ready: boolean;
+  error: string | null;
+  lastLaunchId: string | null;
 };

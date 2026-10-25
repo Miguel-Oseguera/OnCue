@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { setVoiceLaunchAllowed } from "@/features/glasses/voice-launch";
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { ActivityIndicator, useColorScheme, View } from "react-native";
@@ -10,6 +12,10 @@ SplashScreen.preventAutoHideAsync();
 export default function RootLayout() {
   const colorScheme = useColorScheme();
   const { data: session, isPending } = authClient.useSession();
+  useEffect(() => {
+    if (!isPending)
+      void setVoiceLaunchAllowed(Boolean(session)).catch(() => {});
+  }, [isPending, session]);
   return (
     <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
       <AnimatedSplashOverlay />

@@ -94,7 +94,7 @@ final class OncueWearablesCapture {
   func removeObserver(_ id: UUID) { observers.removeValue(forKey: id) }
   private func publish() { let value = snapshot(); for observer in observers.values { observer(value) } }
 
-  func start() async throws -> [String: Any] {
+  func start(preferredDeviceId: String? = nil) async throws -> [String: Any] {
     #if targetEnvironment(simulator)
     throw CaptureFailure("Hands-free capture requires your connected glasses and a physical iPhone.")
     #else
@@ -112,7 +112,7 @@ final class OncueWearablesCapture {
         guard granted == .granted else { throw CaptureFailure("Approve camera and microphone access in Meta AI, then try again.") }
       }
       guard let device = Wearables.shared.devices.first(where: {
-        Wearables.shared.deviceForIdentifier($0)?.linkState == .connected
+        (preferredDeviceId == nil || $0 == preferredDeviceId) && Wearables.shared.deviceForIdentifier($0)?.linkState == .connected
       }) else { throw CaptureFailure("No connected glasses. Power them on and check Meta AI.") }
       let created = try Wearables.shared.createSession(deviceSelector: SpecificDeviceSelector(device: device))
       session = created; enabled = true; phase = "starting"
@@ -209,10 +209,12 @@ final class OncueWearablesCapture {
       }
     })
     tokens.append(attached.transcriptionPublisher.listen { [weak self] result in
-      guard result.isFinal, OncueCaptureCommand.matches(result.text) else { return }
+      guard result.isFinal, let action = OncueCaptureCommand.action(result.text) else { return }
       Task { @MainActor in
-        guard let self, self.generation == run, self.enabled, self.listening,
-          !self.capturing, Date().timeIntervalSince(self.lastCommand) > 3 else { return }
+        guard let self, self.generation == run, self.enabled, self.listening else { return }
+        // Stop must bypass capture busy/cooldown checks.
+        if action == .stop { _ = self.stop(); return }
+        guard !self.capturing, Date().timeIntervalSince(self.lastCommand) > 3 else { return }
         self.lastCommand = Date()
         do { try self.capture(trigger: "voice") }
         catch { self.error = error.localizedDescription; self.publish() }
