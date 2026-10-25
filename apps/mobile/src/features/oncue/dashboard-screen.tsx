@@ -1,3 +1,4 @@
+import { GlassesConnectionCard } from "../glasses/connection-card";
 import { useState } from "react";
 import {
   ActivityIndicator,
@@ -152,6 +153,7 @@ export default function DashboardScreen() {
             One place to keep every moving part moving.
           </Text>
         </View>
+        <GlassesConnectionCard />
         {loading && !data && (
           <ActivityIndicator
             accessibilityLabel="Loading dashboard"

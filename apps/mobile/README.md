@@ -100,3 +100,77 @@ Join our community of developers creating universal apps.
 
 - [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
 - [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+
+## Meta glasses connection (iPhone development build)
+
+The dashboard's **Connect glasses** card registers OnCue through Meta AI. Pair
+and update the glasses in Meta AI, then enable Developer Mode there. This build
+uses DAT 1.0.0 in Developer Mode (`MetaAppID: 0`); production distribution needs
+your registered Meta project configuration.
+
+After rebuilding and installing the native app on a physical iPhone, tap
+**Connect glasses**, approve the connection in Meta AI, and return to OnCue.
+Allow Bluetooth when iOS asks. Registration approval and the actual glasses
+Bluetooth link are separate states. The dashboard shows device link and battery
+updates and refreshes status when you return from Meta AI.
+
+Registration itself starts no sensor session. Open **Hands-free capture** from
+the dashboard and explicitly start listening to enable glasses Speech and Photo.
+Simulator, web, and older app builds explain that an updated iPhone build is needed.
+
+The local Expo module owns SDK initialization and handles Meta callbacks through
+an AppDelegate subscriber (including Expo's scene URL forwarding). The existing
+`mobile` URL scheme and signing settings are unchanged. Non-Meta links, including
+Better Auth callbacks, are not forwarded to DAT.
+
+Native changes require `pod install` in `apps/mobile/ios` and rebuilding the
+existing Xcode workspace. Expo's `app.json` holds the required `MWDAT` and Bluetooth
+Info.plist settings so they survive native regeneration. A Metro refresh alone
+cannot update the native bridge. Device approval must be tested on real hardware.
+
+The `with-meta-dat` Expo config plugin embeds and signs `MWDATCore.framework`,
+`MWDATCamera.framework`, and `MWDATSpeech.framework`
+from the existing Swift package build product. Linking the SDK through a static
+Expo pod alone is insufficient: the app otherwise exits before startup with a
+missing-framework error. Keep the plugin when regenerating the iOS project.
+
+
+### Hands-free task photos (development/beta)
+
+1. Connect your glasses, then open **Hands-free capture** on the dashboard.
+2. Tap **Start hands-free mode** and approve camera and microphone access in Meta AI.
+3. Wait for **Listening for OnCue**, then say **“OnCue, capture this task.”**
+4. Review the photo in the capture tray. Repeat the phrase for another photo.
+5. Tap **Stop listening** here or on the dashboard when finished.
+
+DAT 1.0 Speech and standalone Photo are experimental and must be enabled for the
+app in Wearables Developer Center; they are not available for production release.
+The native controller owns a sustained session independently of the current React
+screen. Pauses wait for SDK resume; terminal sessions require explicit restart.
+Signing out or destroying the JS app context stops the session. Listening is never
+restored automatically after launch. Locked/background behavior needs real-device
+verification; Bluetooth background mode alone does not establish that guarantee.
+No phone microphone fallback, video streaming, or artificial audio keepalive is used.
+
+Only complete, final capture commands are acted on. Case, punctuation and “On cue” /
+“On queue” recognition variants are accepted. Other speech is discarded. A capture
+in progress and a short cooldown prevent duplicate photos. Startup/capture timeouts
+surface errors; session, speech and photo errors are shown in the app.
+
+Photos are normalized to JPEG (up to 2560px), saved atomically under the app's
+Documents/OnCueCaptures folder and indexed in captures.json. They survive app
+restarts and app updates. Uninstalling the app removes them. They are not added to
+Photos, uploaded, sent to AI, or automatically converted into tasks. Preview URIs
+are reconstructed from file names on launch so container path changes are safe.
+
+Native command matcher check (run in apps/mobile):
+
+```sh
+swiftc modules/oncue-wearables/ios/OncueCaptureCommand.swift modules/oncue-wearables/tests/command.test.swift -o /private/tmp/oncue-command-tests
+/private/tmp/oncue-command-tests
+```
+
+On hardware, verify permission denial/retry, repeated voice captures, button capture,
+leaving the capture screen, stop while starting, disconnect/reconnect, persistence
+across relaunch, and locked-phone capture. No live glasses capture is verified by
+the unit checks or native build alone.

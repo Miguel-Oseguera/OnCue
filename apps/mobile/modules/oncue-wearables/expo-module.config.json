@@ -1,7 +1,8 @@
 {
   "platforms": ["apple"],
   "apple": {
-    "modules": ["OncueWearablesModule"]
+    "modules": ["OncueWearablesModule"],
+    "appDelegateSubscribers": ["OncueWearablesAppDelegateSubscriber"]
   },
   "android": {
     "modules": ["expo.modules.oncuewearables.OncueWearablesModule"]
