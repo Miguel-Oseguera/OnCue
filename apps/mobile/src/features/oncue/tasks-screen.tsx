@@ -226,7 +226,7 @@ export default function TasksScreen() {
         }
         ListFooterComponent={
           <Text style={[t.small, { textAlign: "center", marginTop: 12 }]}>
-            Demo changes stay in this app session. Reload to reset.
+            Pull to refresh tasks from your event workspace.
           </Text>
         }
       />

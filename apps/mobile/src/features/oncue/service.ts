@@ -1,3 +1,4 @@
+import type { AIReport } from "./report-service";
 /** Mobile DTOs follow Joshua's API contract on origin/jilva-dev (API.md).
  * Mock IDs are illustrative. No API, auth, database, or device calls occur here.
  */
@@ -14,6 +15,7 @@ export interface Task {
   slots: number;
   location: string | null;
   createdAt: string;
+  aiReports?: AIReport[];
 }
 export interface Team {
   id: string;
@@ -26,6 +28,8 @@ export interface Member {
   teamId: string | null;
 }
 export interface Dashboard {
+  unlinkedAiReports?: AIReport[];
+  unlinkedReportsAvailable?: boolean;
   tasks: Task[];
   teams: Team[];
   members: Member[];
@@ -36,7 +40,10 @@ export interface Dashboard {
     urgent: number;
   };
 }
-export type CreateTaskInput = Omit<Task, "id" | "status" | "createdAt">;
+export type CreateTaskInput = Omit<
+  Task,
+  "id" | "status" | "createdAt" | "aiReports"
+>;
 export type UpdateTaskInput = Partial<Pick<Task, "status" | "assigneeIds">>;
 export interface DashboardService {
   getDashboard(): Promise<Dashboard>;
@@ -53,6 +60,18 @@ export function calculateStats(tasks: Task[]): Dashboard["stats"] {
     ).length,
   };
 }
+/** Mutation responses may omit AI reports. Preserve the loaded reports in that case. */
+export function mergeSavedTask(previous: Dashboard, task: Task): Dashboard {
+  const tasks = previous.tasks.some((item) => item.id === task.id)
+    ? previous.tasks.map((item) =>
+        item.id === task.id
+          ? { ...task, aiReports: task.aiReports ?? item.aiReports }
+          : item,
+      )
+    : [task, ...previous.tasks];
+  return { ...previous, tasks, stats: calculateStats(tasks) };
+}
+
 const teams: Team[] = [
   { id: "team_av", name: "AV Support", leadIds: ["member_alex"] },
   { id: "team_ops", name: "Event Operations", leadIds: ["member_sam"] },

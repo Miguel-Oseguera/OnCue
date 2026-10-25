@@ -37,7 +37,7 @@ export default function TaskDetailScreen() {
     setSaved(null);
     try {
       await updateTask(task.id, input);
-      setSaved("Changes saved to this demo session.");
+      setSaved("Changes saved.");
     } catch (cause) {
       setError(
         cause instanceof Error
@@ -59,7 +59,7 @@ export default function TaskDetailScreen() {
           title={loadError ? "Unable to load task" : "Task not found"}
           subtitle={
             loadError ??
-            "This task may have been part of an earlier demo session."
+            "This task is unavailable. Refresh your tasks and try again."
           }
           back
         />
@@ -196,9 +196,7 @@ export default function TaskDetailScreen() {
           {saved}
         </Text>
       )}
-      <Text style={t.small}>
-        This is a mock task. No updates are sent to the backend.
-      </Text>
+      <Text style={t.small}>Changes are saved to your event workspace.</Text>
     </Page>
   );
 }
