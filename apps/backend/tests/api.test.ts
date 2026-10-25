@@ -1,0 +1,526 @@
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
+import { serve } from "@hono/node-server";
+import { after, test } from "node:test";
+import { eq, inArray, sql } from "drizzle-orm";
+import { z } from "zod";
+import { app } from "../src/app.js";
+import { db, pool } from "../src/db.js";
+import {
+  aiActivity,
+  media,
+  task,
+  team,
+  teamMember,
+  user,
+} from "../src/schema.js";
+import { maxPhotoBytes } from "../src/api/media.js";
+
+after(async () => pool.end());
+
+const taskJson = z.object({
+  id: z.guid(),
+  title: z.string(),
+  description: z.string(),
+  priority: z.enum(["low", "medium", "high", "urgent"]),
+  status: z.enum(["open", "in_progress", "completed"]),
+  teamId: z.guid().nullable(),
+  assigneeIds: z.array(z.string()),
+  slots: z.number(),
+  location: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+});
+const dashboardJson = z.object({
+  tasks: z.array(taskJson),
+  teams: z.array(
+    z.object({ id: z.guid(), name: z.string(), leadIds: z.array(z.string()) }),
+  ),
+  members: z.array(
+    z.object({ id: z.string(), name: z.string(), teamId: z.guid().nullable() }),
+  ),
+  stats: z.object({
+    open: z.number(),
+    inProgress: z.number(),
+    completed: z.number(),
+    urgent: z.number(),
+  }),
+});
+
+async function json<T>(
+  response: Response,
+  status: number,
+  schema: z.ZodType<T>,
+) {
+  assert.equal(response.status, status, await response.clone().text());
+  return schema.parse(await response.json());
+}
+
+// These requests run against the real handler and database, with disposable records only.
+test("dashboard, tasks, photos, and the AI placeholder support the app contract", async (t) => {
+  const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  const baseURL = `http://127.0.0.1:${address.port}`;
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+  );
+  const httpRequest = (path: string, init?: RequestInit) =>
+    fetch(new URL(path, baseURL), init);
+  const taskIds: string[] = [];
+  const mediaIds: string[] = [];
+  const userIds: string[] = [];
+  const teamId = randomUUID();
+  const otherTeamId = randomUUID();
+  t.after(async () => {
+    if (mediaIds.length)
+      await db.delete(media).where(inArray(media.mediaId, mediaIds));
+    if (taskIds.length) await db.delete(task).where(inArray(task.id, taskIds));
+    await db.delete(team).where(inArray(team.id, [teamId, otherTeamId]));
+    if (userIds.length) await db.delete(user).where(inArray(user.id, userIds));
+  });
+
+  async function signup() {
+    const email = `api-test-${randomUUID()}@example.test`;
+    const response = await httpRequest("/api/auth/sign-up/email", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "expo-origin": "mobile://",
+      },
+      body: JSON.stringify({
+        name: "API test member",
+        email,
+        password: `test-${randomUUID()}`,
+      }),
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = z
+      .object({ user: z.object({ id: z.string() }) })
+      .parse(await response.json());
+    userIds.push(body.user.id);
+    const cookie = response.headers
+      .getSetCookie()
+      .map((value) => value.split(";")[0])
+      .join("; ");
+    return { id: body.user.id, cookie };
+  }
+  const first = await signup();
+  const second = await signup();
+  await db.insert(team).values([
+    { id: teamId, teamName: "API test crew" },
+    { id: otherTeamId, teamName: "Other API test crew" },
+  ]);
+  await db
+    .insert(teamMember)
+    .values({ teamId, userId: first.id, role: "lead" });
+
+  const request = (
+    path: string,
+    method = "GET",
+    body?: unknown,
+    cookie = first.cookie,
+  ) =>
+    httpRequest(path, {
+      method,
+      headers: { cookie, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  async function create(overrides: Record<string, unknown> = {}) {
+    const created = await json(
+      await request("/api/tasks", "POST", {
+        title: "API test task",
+        priority: "urgent",
+        teamId,
+        slots: 2,
+        ...overrides,
+      }),
+      201,
+      taskJson,
+    );
+    taskIds.push(created.id);
+    return created;
+  }
+
+  await t.test(
+    "session access, JSON errors, PATCH preflight, and untrusted origins",
+    async () => {
+      for (const [path, method] of [
+        ["/api/dashboard", "GET"],
+        ["/api/tasks", "POST"],
+        [`/api/tasks/${randomUUID()}`, "PATCH"],
+        ["/api/media", "POST"],
+        [`/api/media/${randomUUID()}`, "GET"],
+        ["/api/ai", "POST"],
+      ]) {
+        assert.equal((await httpRequest(path, { method })).status, 401);
+      }
+      const preflight = await httpRequest("/api/tasks/example", {
+        method: "OPTIONS",
+        headers: {
+          origin: "http://localhost:8081",
+          "Access-Control-Request-Method": "PATCH",
+          "Access-Control-Request-Headers": "content-type",
+        },
+      });
+      assert.equal(preflight.status, 204);
+      assert.ok(
+        preflight.headers
+          .get("Access-Control-Allow-Methods")
+          ?.includes("PATCH"),
+      );
+      const untrusted = await httpRequest("/api/tasks", {
+        method: "POST",
+        headers: {
+          cookie: first.cookie,
+          origin: "https://untrusted.example",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ title: "Blocked", priority: "low" }),
+      });
+      assert.equal(untrusted.status, 403);
+      const malformed = await httpRequest("/api/tasks", {
+        method: "POST",
+        headers: { cookie: first.cookie, "Content-Type": "application/json" },
+        body: "{",
+      });
+      await json(malformed, 400, z.object({ error: z.string() }));
+    },
+  );
+
+  await t.test(
+    "create, assignment replacement, rollback, status, dashboard statistics, and one-team membership",
+    async () => {
+      const created = await create({
+        description: "Water is low",
+        location: "Main lobby",
+        assigneeIds: [first.id, second.id],
+      });
+      assert.equal(created.title, "API test task");
+      assert.equal(created.description, "Water is low");
+      assert.equal(created.location, "Main lobby");
+      assert.equal(created.status, "open");
+      assert.deepEqual(created.assigneeIds, [first.id, second.id].sort());
+
+      const replaced = await json(
+        await request(`/api/tasks/${created.id}`, "PATCH", {
+          assigneeIds: [second.id],
+          status: "in_progress",
+        }),
+        200,
+        taskJson,
+      );
+      assert.deepEqual(replaced.assigneeIds, [second.id]);
+      assert.equal(replaced.status, "in_progress");
+      const cleared = await json(
+        await request(`/api/tasks/${created.id}`, "PATCH", { assigneeIds: [] }),
+        200,
+        taskJson,
+      );
+      assert.deepEqual(cleared.assigneeIds, []);
+      assert.equal(cleared.status, "in_progress");
+      const invalidAssignment = await request(
+        `/api/tasks/${created.id}`,
+        "PATCH",
+        { status: "completed", assigneeIds: ["missing-user"] },
+      );
+      assert.equal(invalidAssignment.status, 400);
+      const state = await json(
+        await request("/api/dashboard"),
+        200,
+        dashboardJson,
+      );
+      assert.equal(
+        state.tasks.find((task) => task.id === created.id)?.status,
+        "in_progress",
+      );
+      assert.deepEqual(
+        state.teams.find((team) => team.id === teamId),
+        { id: teamId, name: "API test crew", leadIds: [first.id] },
+      );
+      assert.equal(
+        state.members.find((member) => member.id === first.id)?.teamId,
+        teamId,
+      );
+      assert.equal(
+        state.members.find((member) => member.id === second.id)?.teamId,
+        null,
+      );
+      assert.deepEqual(state.stats, {
+        open: state.tasks.filter((task) => task.status === "open").length,
+        inProgress: state.tasks.filter((task) => task.status === "in_progress")
+          .length,
+        completed: state.tasks.filter((task) => task.status === "completed")
+          .length,
+        urgent: state.tasks.filter(
+          (task) => task.priority === "urgent" && task.status !== "completed",
+        ).length,
+      });
+      await json(
+        await request(`/api/tasks/${created.id}`, "PATCH", {
+          status: "completed",
+        }),
+        200,
+        taskJson,
+      );
+      const after = await json(
+        await request("/api/dashboard"),
+        200,
+        dashboardJson,
+      );
+      assert.equal(after.stats.urgent, state.stats.urgent - 1);
+      await assert.rejects(
+        db
+          .insert(teamMember)
+          .values({ teamId: otherTeamId, userId: first.id, role: "member" }),
+      );
+
+      for (const input of [
+        { title: "", priority: "high" },
+        { title: "Bad", priority: "critical" },
+        { title: "Bad", priority: "low", slots: 0 },
+        {
+          title: "Bad",
+          priority: "low",
+          slots: 1,
+          assigneeIds: [first.id, second.id],
+        },
+        { title: "Bad", priority: "low", assigneeIds: [first.id, first.id] },
+        { title: "Bad", priority: "low", teamId: randomUUID() },
+        { title: "Bad", priority: "low", assigneeIds: ["missing-user"] },
+      ])
+        assert.equal((await request("/api/tasks", "POST", input)).status, 400);
+      for (const input of [
+        {},
+        { status: "pending" },
+        { title: "Unsupported" },
+        { assigneeIds: null },
+      ]) {
+        assert.equal(
+          (await request(`/api/tasks/${created.id}`, "PATCH", input)).status,
+          400,
+        );
+      }
+      await json(
+        await request(`/api/tasks/${randomUUID()}`, "PATCH", {
+          status: "completed",
+        }),
+        404,
+        z.object({ error: z.string() }),
+      );
+      assert.equal(
+        (
+          await request("/api/tasks/not-a-uuid", "PATCH", {
+            status: "completed",
+          })
+        ).status,
+        400,
+      );
+    },
+  );
+
+  await t.test(
+    "concurrent claims cannot overfill slots and claimedBy only returns matching tasks",
+    async () => {
+      const target = await create({ slots: 1 });
+      const unrelated = await create();
+      const responses = await Promise.all([
+        request(
+          `/api/tasks/claim/${target.id}`,
+          "POST",
+          undefined,
+          first.cookie,
+        ),
+        request(
+          `/api/tasks/claim/${target.id}`,
+          "POST",
+          undefined,
+          second.cookie,
+        ),
+      ]);
+      assert.deepEqual(
+        responses.map((response) => response.status).sort(),
+        [200, 409],
+      );
+      const winner = responses[0].status === 200 ? first : second;
+      const repeated = await json(
+        await request(
+          `/api/tasks/claim/${target.id}`,
+          "POST",
+          undefined,
+          winner.cookie,
+        ),
+        200,
+        taskJson,
+      );
+      assert.deepEqual(repeated.assigneeIds, [winner.id]);
+      assert.equal(
+        (
+          await request(`/api/tasks/${target.id}`, "PATCH", {
+            assigneeIds: [first.id, second.id],
+          })
+        ).status,
+        409,
+      );
+      const claimed = await json(
+        await request(
+          "/api/tasks?claimedBy=me",
+          "GET",
+          undefined,
+          winner.cookie,
+        ),
+        200,
+        z.array(taskJson),
+      );
+      assert.ok(claimed.some((task) => task.id === target.id));
+      assert.ok(claimed.every((task) => task.assigneeIds.includes(winner.id)));
+      assert.ok(!claimed.some((task) => task.id === unrelated.id));
+      const filtered = await json(
+        await request(`/api/tasks?teamId=${otherTeamId}`),
+        200,
+        z.array(taskJson),
+      );
+      assert.ok(filtered.every((task) => task.teamId === otherTeamId));
+    },
+  );
+
+  await t.test(
+    "photos persist with authenticated retrieval and the AI endpoint has no side effects",
+    async () => {
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jitkAAAAASUVORK5CYII=",
+        "base64",
+      );
+      const target = await create();
+      async function upload(file: File, taskId?: string) {
+        const form = new FormData();
+        form.append("file", file);
+        if (taskId) form.append("taskId", taskId);
+        return httpRequest("/api/media", {
+          method: "POST",
+          headers: { cookie: first.cookie },
+          body: form,
+        });
+      }
+      const saved = await json(
+        await upload(
+          new File([png], "photo.png", { type: "image/png" }),
+          target.id,
+        ),
+        201,
+        z.object({
+          id: z.guid(),
+          url: z.string(),
+          contentType: z.string(),
+          size: z.number(),
+          taskId: z.guid().nullable(),
+        }),
+      );
+      mediaIds.push(saved.id);
+      assert.equal(saved.taskId, target.id);
+      assert.equal(saved.size, png.length);
+      assert.equal(saved.contentType, "image/png");
+      assert.equal((await httpRequest(saved.url)).status, 401);
+      const download = await request(saved.url);
+      assert.equal(download.status, 200);
+      assert.equal(download.headers.get("Content-Type"), "image/png");
+      assert.equal(download.headers.get("X-Content-Type-Options"), "nosniff");
+      assert.deepEqual(Buffer.from(await download.arrayBuffer()), png);
+      assert.equal(
+        (await upload(new File(["<svg/>"], "bad.png", { type: "image/png" })))
+          .status,
+        415,
+      );
+      assert.equal(
+        (await upload(new File([png], "bad.jpg", { type: "image/jpeg" })))
+          .status,
+        415,
+      );
+      assert.equal(
+        (await upload(new File([], "empty.png", { type: "image/png" }))).status,
+        400,
+      );
+      assert.equal(
+        (
+          await upload(
+            new File([new Uint8Array(maxPhotoBytes + 1)], "large.png", {
+              type: "image/png",
+            }),
+          )
+        ).status,
+        413,
+      );
+      assert.equal(
+        (
+          await upload(
+            new File([new Uint8Array(maxPhotoBytes + 128 * 1024)], "huge.png", {
+              type: "image/png",
+            }),
+          )
+        ).status,
+        413,
+      );
+      assert.equal(
+        (
+          await upload(
+            new File([png], "photo.png", { type: "image/png" }),
+            randomUUID(),
+          )
+        ).status,
+        404,
+      );
+      assert.equal((await request(`/api/media/${randomUUID()}`)).status, 404);
+
+      const counts = async () => ({
+        tasks: (
+          await db.select({ count: sql<number>`count(*)::integer` }).from(task)
+        )[0]?.count,
+        reports: (
+          await db
+            .select({ count: sql<number>`count(*)::integer` })
+            .from(aiActivity)
+        )[0]?.count,
+        media: (
+          await db.select({ count: sql<number>`count(*)::integer` }).from(media)
+        )[0]?.count,
+      });
+      const before = await counts();
+      const snapshot = await json(
+        await request("/api/dashboard"),
+        200,
+        dashboardJson,
+      );
+      assert.deepEqual(
+        await json(
+          await request("/api/ai", "POST", {
+            text: "The projector is broken",
+            source: "glasses",
+            mediaIds: [saved.id],
+          }),
+          200,
+          z.object({ processed: z.boolean(), tasks: z.array(z.unknown()) }),
+        ),
+        { processed: false, tasks: [] },
+      );
+      assert.deepEqual(await counts(), before);
+      assert.deepEqual(
+        await json(await request("/api/dashboard"), 200, dashboardJson),
+        snapshot,
+      );
+      assert.equal(
+        (
+          await request("/api/ai", "POST", {
+            source: "glasses",
+            text: "",
+            mediaIds: [],
+          })
+        ).status,
+        400,
+      );
+    },
+  );
+});

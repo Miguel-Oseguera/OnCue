@@ -1,10 +1,10 @@
 import { db, pool } from "./db.js";
-import { demoEventId, seedDemo } from "./seed-data.js";
+import { demoTeamId, seedDemo } from "./seed-data.js";
 
 try {
   const created = await db.transaction(seedDemo);
   console.info(
-    `${created ? "Demo data seeded" : "Demo event already exists; skipped"}. Event ID: ${demoEventId}`,
+    `${created ? "Demo data seeded" : "Demo team already exists; skipped"}. Team ID: ${demoTeamId}`,
   );
 } finally {
   await pool.end();
