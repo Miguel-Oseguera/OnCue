@@ -1,6 +1,6 @@
 export * from "./auth-schema.js";
 
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import {
   index,
   pgTable,
@@ -10,6 +10,9 @@ import {
   timestamp,
   pgEnum,
   uuid,
+  check,
+  customType,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { user } from "./auth-schema.js";
 
@@ -37,7 +40,7 @@ export const teamMember = pgTable(
   },
   (table) => [
     primaryKey({ columns: [table.teamId, table.userId] }),
-    index("team_member_user_id_idx").on(table.userId),
+    uniqueIndex("team_member_user_id_idx").on(table.userId),
   ],
 );
 
@@ -49,14 +52,37 @@ export const schedule = pgTable("schedule", {
   endTime: timestamp("end_time", { withTimezone: true }).notNull(),
 });
 
-export const task = pgTable("task", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  teamId: uuid("team_id").references(() => team.id, { onDelete: "set null" }),
-  slots: integer("slots").notNull().default(0),
-  assignment: text("assignment").notNull(),
-  priority: text("priority").notNull(),
-  status: text("status").notNull(),
-});
+export const taskPriorities = ["low", "medium", "high", "urgent"] as const;
+export const taskStatuses = ["open", "in_progress", "completed"] as const;
+
+export const task = pgTable(
+  "task",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    teamId: uuid("team_id").references(() => team.id, { onDelete: "set null" }),
+    slots: integer("slots").notNull().default(1),
+    // Keep the existing database column so historical task text is preserved.
+    title: text("assignment").notNull(),
+    description: text("description").notNull().default(""),
+    location: text("location"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    priority: text("priority", { enum: taskPriorities }).notNull(),
+    status: text("status", { enum: taskStatuses }).notNull().default("open"),
+  },
+  (table) => [
+    check("task_slots_positive", sql`${table.slots} > 0`),
+    check(
+      "task_priority_valid",
+      sql`${table.priority} IN ('low', 'medium', 'high', 'urgent')`,
+    ),
+    check(
+      "task_status_valid",
+      sql`${table.status} IN ('open', 'in_progress', 'completed')`,
+    ),
+  ],
+);
 
 export const taskAssignee = pgTable(
   "task_assignee",
@@ -74,7 +100,9 @@ export const taskAssignee = pgTable(
   ],
 );
 
-// Photo and video/audio values identify stored files, such as URLs or object keys.
+const bytea = customType<{ data: Buffer }>({ dataType: () => "bytea" });
+
+// MVP photo bytes live in Postgres. The photo field is their authenticated API path.
 export const media = pgTable(
   "media",
   {
@@ -83,6 +111,8 @@ export const media = pgTable(
       onDelete: "set null",
     }),
     photo: text("photo"),
+    photoData: bytea("photo_data"),
+    contentType: text("content_type"),
     videoAudio: text("video_audio"),
     transcript: text("transcript"),
   },

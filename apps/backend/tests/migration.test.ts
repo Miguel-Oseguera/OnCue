@@ -7,7 +7,7 @@ import { db, pool } from "../src/db.js";
 
 after(async () => pool.end());
 
-test("0003 migrates populated legacy tables to auth-user assignments", async () => {
+test("0003 and 0004 preserve legacy task data while adopting auth users and the dashboard contract", async () => {
   const rollback = new Error("Roll back migration verification");
   const schemaName = `migration_verify_${randomUUID().replaceAll("-", "")}`;
 
@@ -177,6 +177,27 @@ test("0003 migrates populated legacy tables to auth-user assignments", async () 
           column_default: null,
         },
       ]);
+
+      // The new contract allows one team. Remove only this test fixture's second membership.
+      await tx.execute(sql`
+        DELETE FROM team_member
+        WHERE team_id = '00000000-0000-4000-8000-000000000004'
+      `);
+      await tx.execute(sql`UPDATE task SET slots = 0`);
+      await applyMigration("0004_flashy_mantis.sql");
+      const migratedTask = await tx.execute(sql`
+        SELECT assignment, description, location, status, slots,
+          created_at IS NOT NULL AS has_created_at
+        FROM task
+      `);
+      assert.deepEqual(migratedTask.rows[0], {
+        assignment: "Check microphones",
+        description: "",
+        location: null,
+        status: "open",
+        slots: 1,
+        has_created_at: true,
+      });
 
       await tx.execute(sql`DELETE FROM "user" WHERE id = 'auth-user-alpha'`);
       const deletedUserJoins = await tx.execute(sql`

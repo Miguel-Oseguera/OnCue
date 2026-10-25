@@ -29,6 +29,13 @@
       "when": 1792909821227,
       "tag": "0003_clammy_silver_fox",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792911726455,
+      "tag": "0004_flashy_mantis",
+      "breakpoints": true
     }
   ]
 }

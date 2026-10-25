@@ -38,11 +38,12 @@ Then run `pnpm --filter backend db:generate`, review the generated SQL, and run
 The application tables use these relationships:
 
 - Teams have auth users as members through `team_member`. Membership roles are
-  `lead`, `member`, or `volunteer`. A user can belong to multiple teams.
-- Tasks can belong to a team and have a slot count. `task_assignee` links tasks
-  directly to auth users. The claim route checks membership for team tasks.
+  `lead`, `member`, or `volunteer`. A user can belong to at most one team.
+- Tasks have a title, description, priority, status, creation time, optional location and team, and a positive slot count. `task_assignee` links tasks
+  directly to auth users. Every signed-in user can claim an available slot.
 - User references are text to match Better Auth IDs. Application record IDs are UUIDs.
 - Schedule entries have timezone-aware start and end times.
+- Photo uploads store bytes in Postgres and require a session for retrieval.
 - Media and AI activity can reference a task. Deleting a task removes assignments
   and clears its media and AI references. Deleting a team removes memberships
   and clears the team on its tasks.
@@ -65,7 +66,7 @@ The script uses [`drizzle-seed`](https://orm.drizzle.team/docs/seed-overview)
 with seed `20261025` and generator version `2`. This seed number separates the
 new dataset from the previous event-based fixtures. It creates one demo team, four tasks,
 three schedule entries with end times after their starts, and sample transcripts
-and AI activity. It gives up to four existing auth users team memberships and
+and AI activity. It gives up to four existing auth users without a team new memberships and
 one task assignment each. If no users exist, memberships and assignments are
 left empty. This script does not create a login.
 
@@ -74,6 +75,10 @@ seeding. The team ID is
 `0c0e0000-0000-4000-8000-000000000001`.
 
 ## API
+
+See [the app API contract](./API.md) for dashboard, task mutations, photo uploads,
+the AI placeholder, request fields, and error codes. All signed-in users have the
+same dashboard and task permissions.
 
 - `/api/auth/*`: Better Auth email/password sign-up, sign-in, session, and sign-out.
 - `GET /api/me`: the signed-in user's ID, name, and email. Returns 401 without a
@@ -95,7 +100,9 @@ sign-out. It removes that account and its related records afterward.
 The seed test checks repeat runs, preserved edits and auth records, membership
 roles, task capacity, and schedule times. The migration test applies migrations
 to populated legacy tables in an isolated schema. Both tests roll back all
-verification changes.
+verification changes. API tests create disposable records and clean them up.
+They verify dashboard responses, task mutations, concurrent claims, photo upload
+and authenticated retrieval, and the AI placeholder's lack of side effects.
 
 `pnpm --filter backend build` also emits API declarations used by the mobile
 client. Run it before checking mobile types on a fresh checkout. The root

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, notExists } from "drizzle-orm";
 import { seed } from "drizzle-seed";
 import type { db } from "./db.js";
 import {
@@ -71,7 +71,7 @@ export async function seedDemo(tx: SeedTransaction) {
       columns: {
         teamId: f.default({ defaultValue: demoTeamId }),
         slots: f.int({ minValue: 1, maxValue: 4 }),
-        assignment: f.valuesFromArray({
+        title: f.valuesFromArray({
           values: [
             "Set up the check-in desk and badges",
             "Test the main-stage projector and microphones",
@@ -82,7 +82,7 @@ export async function seedDemo(tx: SeedTransaction) {
         }),
         priority: f.valuesFromArray({ values: ["low", "medium", "high"] }),
         status: f.valuesFromArray({
-          values: ["pending", "in_progress", "completed"],
+          values: ["open", "in_progress", "completed"],
         }),
       },
     },
@@ -90,6 +90,8 @@ export async function seedDemo(tx: SeedTransaction) {
       count: 2,
       columns: {
         photo: f.default({ defaultValue: null }),
+        photoData: f.default({ defaultValue: null }),
+        contentType: f.default({ defaultValue: null }),
         videoAudio: f.default({ defaultValue: null }),
         transcript: f.valuesFromArray({
           values: [
@@ -119,6 +121,11 @@ export async function seedDemo(tx: SeedTransaction) {
   const users = await tx
     .select({ id: user.id })
     .from(user)
+    .where(
+      notExists(
+        tx.select().from(teamMember).where(eq(teamMember.userId, user.id)),
+      ),
+    )
     .orderBy(user.id)
     .limit(4);
   if (users.length > 0) {
