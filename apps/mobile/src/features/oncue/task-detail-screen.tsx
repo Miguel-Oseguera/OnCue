@@ -3,6 +3,7 @@ import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { dashboardColors as c } from "./dashboard-theme";
 import { useOperations } from "./operations-provider";
+import { TaskAIReports } from "./task-ai-reports";
 import type { UpdateTaskInput } from "./service";
 import {
   Button,
@@ -91,6 +92,7 @@ export default function TaskDetailScreen() {
           Created {new Date(task.createdAt).toLocaleString()}
         </Text>
       </View>
+      <TaskAIReports key={task.id} taskId={task.id} />
       <View style={{ gap: 12 }}>
         <Text style={t.label}>Move the work forward</Text>
         <Text style={t.small}>Select a status. Changes save immediately.</Text>

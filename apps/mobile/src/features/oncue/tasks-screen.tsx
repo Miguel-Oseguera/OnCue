@@ -121,6 +121,17 @@ export default function TasksScreen() {
               onPress={() => router.push("/tasks/new")}
               disabled={!data}
             />
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => router.push("/tasks/unlinked-reports")}
+              style={({ pressed }) => [
+                { minHeight: 44, justifyContent: "center" },
+                pressed && { opacity: 0.7 },
+              ]}
+            >
+              <Text style={t.link}>Unlinked AI reports ›</Text>
+              <Text style={t.small}>Linked reports are inside each task.</Text>
+            </Pressable>
             <Field
               label="Search tasks"
               placeholder="Title, location, or team…"
