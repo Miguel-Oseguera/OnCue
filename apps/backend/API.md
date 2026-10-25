@@ -146,13 +146,24 @@ for text and form overhead. Files must be nonempty and have matching MIME types
 and signatures, as with photo uploads. Let the client set the multipart boundary.
 JSON bodies and `mediaIds` are no longer accepted.
 
-The backend sends the text and image bytes together to Gemini. It requires
-`GEMINI_API_KEY`. On success, it returns `{ processed: true, analysis, tasks }`,
-where `tasks` contains one new, unassigned task for staff review. The backend
-saves the report in the activity log before calling Gemini, then updates that
-record with the analysis and task ID. If processing fails, the report remains
-with no task, decision, or action. Uploaded photos are stored against the task
-on success. Image-only reports use a default instruction to analyze the event scene.
+The backend sends the text and image bytes together to Gemini through Vercel AI SDK.
+It requires `GEMINI_API_KEY`. On success, it returns `{ processed: true, analysis, tasks }`.
+The agent can search active tasks with `findRelatedTasks` and create a task with
+`createTask`. `tasks` contains the task returned by a successful creation tool call,
+or is empty when the agent does not create a task. The endpoint does not create
+tasks itself.
+
+The agent runner saves the report in the activity log before calling Gemini.
+The creation tool saves the task, links that report, and stores its uploaded
+photos in one transaction. Repeated or concurrent creation calls for the same
+report return the existing task without changing it or duplicating photos.
+After the agent finishes, the runner saves the final analysis on the report.
+
+If processing fails before task creation, the original report remains unlinked.
+If creation succeeds but a later model call fails, the task, report link, and
+photos remain saved; the final analysis may be absent. Reports matched to existing
+tasks remain unlinked for now. Photos are stored only when the creation tool runs.
+Image-only reports use a default instruction to analyze the event scene.
 
 ## Existing task helpers
 

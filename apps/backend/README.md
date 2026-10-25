@@ -77,7 +77,7 @@ seeding. The team ID is
 ## API
 
 See [the app API contract](./API.md) for dashboard, task mutations, photo uploads,
-the AI placeholder, request fields, and error codes. All signed-in users have the
+AI report analysis, request fields, and error codes. All signed-in users have the
 same dashboard and task permissions.
 
 - `/api/auth/*`: Better Auth email/password sign-up, sign-in, session, and sign-out.
@@ -89,6 +89,39 @@ same dashboard and task permissions.
 Native requests to protected API routes must forward the cookie returned by
 `authClient.getCookie()`. The mobile app's typed Hono client does this. Browser
 requests use `credentials: 'include'`.
+
+## Logistics agent
+
+`src/agent/index.ts` uses Vercel AI SDK's `ToolLoopAgent` with the
+`@ai-sdk/google` provider and `gemini-3.5-flash-lite`. Set `GEMINI_API_KEY` in
+the backend environment. The provider receives this key explicitly, so no
+Vercel account or AI Gateway key is required.
+
+`createLogisticsAgent()` configures the model, instructions, tools, and output
+schema. The two tools in `src/agent/tools.ts` are:
+
+- `findRelatedTasks({ query, location? })`: searches open and in-progress tasks
+  by case-insensitive text in the title, description, or location. An optional
+  location filter narrows the results. Returns up to 10 matches, newest first,
+  with descriptions limited to 500 characters. This is literal substring search.
+- `createTask(taskFields)`: uses the same validation as manual task creation.
+  The current report ID, source, and photos come from server-side context.
+  Task creation, report attachment, and photo storage commit together. Repeating
+  the call for a report returns its existing task.
+
+The agent can use tool results in subsequent steps, up to five model calls
+per generation. The `/api/ai` handler returns tasks from successful tool results;
+it does not create another task after the agent finishes.
+
+`runLogisticsAgent({ message, source?, history?, images? })` saves the incoming
+report, then sends its text, history, and images to the agent. It returns
+`{ analysis, tasks, reportId }`. `Output.object` validates the final analysis
+against the Zod schema. Invalid model output throws, but the report and any
+task already created by a tool stay saved. A report can finish without creating
+a task. Linking it to an existing task is not implemented yet.
+
+See the [AI SDK agent guide](https://ai-sdk.dev/docs/agents/building-agents)
+for tool definitions and loop control.
 
 ## Verification
 
@@ -102,7 +135,9 @@ roles, task capacity, and schedule times. The migration test applies migrations
 to populated legacy tables in an isolated schema. Both tests roll back all
 verification changes. API tests create disposable records and clean them up.
 They verify dashboard responses, task mutations, concurrent claims, photo upload
-and authenticated retrieval, and the AI placeholder's lack of side effects.
+and authenticated retrieval, and AI report processing with mocked Gemini HTTP
+responses. AI tests exercise the real SDK, provider, search, and creation tools
+without a live model call, including concurrent creation calls for one report.
 
 `pnpm --filter backend build` also emits API declarations used by the mobile
 client. Run it before checking mobile types on a fresh checkout. The root

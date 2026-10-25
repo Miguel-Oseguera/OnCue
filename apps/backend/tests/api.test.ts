@@ -16,6 +16,8 @@ import {
   user,
 } from "../src/schema.js";
 import { maxPhotoBytes } from "../src/photos.js";
+import { createTaskFromReport, findRelatedTasks } from "../src/tasks.js";
+import { createTaskSchema } from "../src/api/validation.js";
 
 after(async () => pool.end());
 
@@ -478,7 +480,95 @@ test("dashboard, tasks, photos, and AI reports support the app contract", async 
   });
 
   await t.test(
-    "AI accepts image uploads, sends their bytes to Gemini, and saves task evidence",
+    "related-task search matches text and location while excluding completed tasks",
+    async () => {
+      const marker = randomUUID();
+      const open = await create({
+        title: `Projector ${marker}`,
+        location: "Room 204",
+      });
+      const active = await create({
+        title: "AV issue",
+        description: `Projector ${marker}`,
+        location: "Room 204",
+      });
+      await request(`/api/tasks/${active.id}`, "PATCH", {
+        status: "in_progress",
+      });
+      const closed = await create({
+        title: `Projector ${marker}`,
+        location: "Room 204",
+      });
+      await request(`/api/tasks/${closed.id}`, "PATCH", {
+        status: "completed",
+      });
+      const elsewhere = await create({
+        title: `Projector ${marker}`,
+        location: "Room 205",
+      });
+      const matches = await findRelatedTasks({
+        query: `projector ${marker}`,
+        location: "room 204",
+      });
+      assert.deepEqual(
+        matches.map((task) => task.id).sort(),
+        [open.id, active.id].sort(),
+      );
+      assert.equal((await findRelatedTasks({ query: marker })).length, 3);
+      const literal = await create({ title: `100%_ ${marker}` });
+      await create({ title: `100abc ${marker}` });
+      assert.deepEqual(
+        (await findRelatedTasks({ query: `100%_ ${marker}` })).map(
+          (task) => task.id,
+        ),
+        [literal.id],
+      );
+      assert.ok(!matches.some((task) => task.id === elsewhere.id));
+    },
+  );
+
+  await t.test(
+    "task creation requires a real report and rolls back invalid assignments",
+    async (t) => {
+      const reportId = randomUUID();
+      const title = `Invalid AI task ${randomUUID()}`;
+      const input = createTaskSchema.parse({
+        title,
+        priority: "high",
+        assigneeIds: [randomUUID()],
+      });
+      await db.insert(aiActivity).values({ reportId, report: title });
+      t.after(async () => {
+        await db.delete(aiActivity).where(eq(aiActivity.reportId, reportId));
+        await db.delete(task).where(eq(task.title, title));
+      });
+      const context = { source: "test", images: [] };
+      await assert.rejects(
+        createTaskFromReport({ ...context, input, reportId: randomUUID() }),
+        /Report not found/,
+      );
+      await assert.rejects(
+        createTaskFromReport({ ...context, input, reportId }),
+        /An assignee does not exist/,
+      );
+      assert.deepEqual(
+        await db
+          .select({ id: task.id })
+          .from(task)
+          .where(eq(task.title, title)),
+        [],
+      );
+      const [report] = await db
+        .select()
+        .from(aiActivity)
+        .where(eq(aiActivity.reportId, reportId));
+      assert.equal(report?.taskId, null);
+      assert.equal(report?.action, null);
+    },
+  );
+
+  await t.test(
+    "AI searches, creates through tools, and attaches each report and its images once",
     async (t) => {
       const png = Buffer.from(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jitkAAAAASUVORK5CYII=",
@@ -493,6 +583,15 @@ test("dashboard, tasks, photos, and AI reports support the app contract", async 
         requiresHumanAttention: true,
       };
       const geminiRequests: unknown[] = [];
+      const taskTitle = `AI projector ${randomUUID()}`;
+      let searchQuery = randomUUID();
+      let shouldCreateTask = true;
+      const toolInput = {
+        title: taskTitle,
+        description: "Send AV support",
+        priority: "urgent",
+        location: "Room 204",
+      };
       const earlyReport = `The projector is broken ${randomUUID()}`;
       const activityIds: string[] = [];
       t.after(async () => {
@@ -526,7 +625,94 @@ test("dashboard, tasks, photos, and AI reports support the app contract", async 
             assert.equal(reports[0]?.decision, null);
             assert.equal(reports[0]?.action, null);
           }
-          geminiRequests.push(await outgoing.json());
+          const payload: unknown = await outgoing.json();
+          geminiRequests.push(payload);
+          const parsed = z
+            .object({
+              contents: z.array(
+                z.object({
+                  parts: z.array(
+                    z.object({
+                      functionResponse: z
+                        .object({
+                          name: z.string(),
+                          response: z.object({ content: z.unknown() }),
+                        })
+                        .optional(),
+                    }),
+                  ),
+                }),
+              ),
+            })
+            .parse(payload);
+          const results = parsed.contents
+            .flatMap((content) => content.parts)
+            .flatMap((part) =>
+              part.functionResponse ? [part.functionResponse] : [],
+            );
+          if (!results.some((result) => result.name === "findRelatedTasks")) {
+            return Response.json({
+              candidates: [
+                {
+                  content: {
+                    role: "model",
+                    parts: [
+                      {
+                        functionCall: {
+                          name: "findRelatedTasks",
+                          args: { query: searchQuery },
+                        },
+                        thoughtSignature: "dGVzdC1zaWduYXR1cmU=",
+                      },
+                    ],
+                  },
+                  finishReason: "STOP",
+                },
+              ],
+            });
+          }
+          if (
+            shouldCreateTask &&
+            !results.some((result) => result.name === "createTask")
+          ) {
+            // Simultaneous duplicate calls must still create one task and one set of photos.
+            return Response.json({
+              candidates: [
+                {
+                  content: {
+                    role: "model",
+                    parts: [
+                      {
+                        functionCall: { name: "createTask", args: toolInput },
+                        thoughtSignature: "dGVzdC1zaWduYXR1cmU=",
+                      },
+                      {
+                        functionCall: { name: "createTask", args: toolInput },
+                        thoughtSignature: "dGVzdC1zaWduYXR1cmU=",
+                      },
+                    ],
+                  },
+                  finishReason: "STOP",
+                },
+              ],
+            });
+          }
+          if (shouldCreateTask) {
+            const created = results
+              .filter((result) => result.name === "createTask")
+              .map((result) => taskJson.parse(result.response.content));
+            taskIds.push(...created.map((task) => task.id));
+            assert.equal(created.length, 2);
+            assert.equal(created[0]?.id, created[1]?.id);
+          } else {
+            const matches = z
+              .array(z.object({ title: z.string() }))
+              .parse(
+                results.find((result) => result.name === "findRelatedTasks")
+                  ?.response.content,
+              );
+            assert.ok(matches.some((task) => task.title === taskTitle));
+          }
           return Response.json({
             candidates: [
               {
@@ -579,6 +765,8 @@ test("dashboard, tasks, photos, and AI reports support the app contract", async 
         assert.ok(created);
         taskIds.push(created.id);
         assert.equal(created.priority, "urgent");
+        assert.equal(created.title, taskTitle);
+        assert.equal(created.location, "Room 204");
         assert.deepEqual(result.analysis, analysis);
         const payload = z
           .object({
@@ -629,6 +817,35 @@ test("dashboard, tasks, photos, and AI reports support the app contract", async 
           assert.equal(reports[0]?.reportId, activityIds[0]);
         }
       }
+
+      shouldCreateTask = false;
+      searchQuery = taskTitle;
+      const duplicateReport = `Follow-up report ${randomUUID()}`;
+      const before = await db
+        .select({ id: task.id })
+        .from(task)
+        .where(eq(task.title, taskTitle));
+      assert.equal(before.length, 3);
+      const duplicateResult = await json(
+        await submit([], duplicateReport),
+        200,
+        z.object({ processed: z.literal(true), tasks: z.array(taskJson) }),
+      );
+      assert.deepEqual(duplicateResult.tasks, []);
+      assert.deepEqual(
+        await db
+          .select({ id: task.id })
+          .from(task)
+          .where(eq(task.title, taskTitle)),
+        before,
+      );
+      const duplicateReports = await db
+        .select()
+        .from(aiActivity)
+        .where(eq(aiActivity.report, duplicateReport));
+      activityIds.push(...duplicateReports.map((report) => report.reportId));
+      assert.equal(duplicateReports[0]?.taskId, null);
+      assert.equal(duplicateReports[0]?.action, "No task created");
 
       const failedReport = `AI failure test ${randomUUID()}`;
       delete process.env.GEMINI_API_KEY;
