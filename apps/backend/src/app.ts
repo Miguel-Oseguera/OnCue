@@ -1,18 +1,10 @@
 import { sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { createMiddleware } from "hono/factory";
 import { auth, trustedOrigins } from "./auth.js";
 import { db } from "./db.js";
-
-const requireSession = createMiddleware<{
-  Variables: { session: typeof auth.$Infer.Session };
-}>(async (c, next) => {
-  const session = await auth.api.getSession({ headers: c.req.raw.headers });
-  if (!session) return c.json({ error: "Unauthorized" }, 401);
-  c.set("session", session);
-  await next();
-});
+import api from "@/api/api.js";
+import { requireSession } from "./auth.js";
 
 export const app = new Hono()
   .use(
@@ -25,6 +17,7 @@ export const app = new Hono()
       allowMethods: ["GET", "POST", "OPTIONS"],
     }),
   )
+  .route("/", api)
   .all("/api/auth/*", (c) => auth.handler(c.req.raw))
   .get("/", (c) => c.text("Hello Hono!"))
   .get("/health/db", async (c) => {

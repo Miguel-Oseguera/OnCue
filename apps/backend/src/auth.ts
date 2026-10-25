@@ -1,5 +1,6 @@
 import { expo } from "@better-auth/expo";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
+import { createMiddleware } from "hono/factory";
 import { betterAuth } from "better-auth";
 import { z } from "zod";
 import { db } from "./db.js";
@@ -35,4 +36,13 @@ export const auth = betterAuth({
   emailAndPassword: { enabled: true },
   trustedOrigins,
   plugins: [expo()],
+});
+
+export const requireSession = createMiddleware<{
+  Variables: { session: typeof auth.$Infer.Session };
+}>(async (c, next) => {
+  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  c.set("session", session);
+  await next();
 });

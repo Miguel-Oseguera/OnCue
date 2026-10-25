@@ -14,10 +14,10 @@ function getBackendURL() {
   const host = Constants.expoConfig?.hostUri;
   if (host && Platform.OS !== "web") {
     const url = new URL(`http://${host}`);
-    url.port = "3002";
+    url.port = "3000";
     return url.origin;
   }
-  return "http://localhost:3002";
+  return "http://localhost:3000";
 }
 
 export const backendURL = getBackendURL();
