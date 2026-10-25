@@ -27,6 +27,7 @@ export type LogisticsAnalysis = z.infer<
 
 export async function runLogisticsAgent(
   message: string,
+  history: string[] = [],
 ): Promise<LogisticsAnalysis> {
   if (!message.trim()) {
     throw new Error("A logistics report is required.");
@@ -43,9 +44,16 @@ export async function runLogisticsAgent(
   const response = await ai.models.generateContent({
     model: "gemini-3.5-flash-lite",
     contents: `
-Analyze this event logistics report:
+You are analyzing a live event logistics report.
 
+Previous reports about this incident:
+${history.length ? history.join("\n") : "None"}
+
+Latest report:
 ${message}
+
+Analyze the current situation using the previous reports
+for context. Prioritize the latest information.
     `,
     config: {
       systemInstruction: AGENT_INSTRUCTIONS,
