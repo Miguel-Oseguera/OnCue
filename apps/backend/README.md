@@ -35,32 +35,50 @@ or options that affect its schema, run `pnpm --filter backend auth:generate`.
 Then run `pnpm --filter backend db:generate`, review the generated SQL, and run
 `pnpm --filter backend db:migrate` against your development branch first.
 
-The application tables follow `Schema.drawio`:
+The application tables use these relationships:
 
-- Events have a name, location, and an array of calendar dates.
-- Members belong to an event. Their name and profile picture are independent of
-  Better Auth users. Lead and volunteer flags describe their event roles.
-- Event owners use `event_owner`. Team membership uses `team_member`, whose
-  `is_lead` flag identifies each team's leads. Tasks use `task_assignee` to
-  support multiple assigned members. Each join table prevents duplicate pairs.
-- Schedule entries have a generated ID and a timezone-aware start time.
-- Media and AI activity belong to an event and can optionally reference a task.
-  Photo and video/audio fields store file URLs or storage keys. Transcripts,
-  decisions, and actions can be absent.
-- Priority and status are required text because the diagram defines no allowed
-  values. All application IDs are generated UUIDs.
+- Teams have auth users as members through `team_member`. Membership roles are
+  `lead`, `member`, or `volunteer`. A user can belong to at most one team.
+- Tasks have a title, description, priority, status, creation time, optional location and team, and a positive slot count. `task_assignee` links tasks
+  directly to auth users. Every signed-in user can claim an available slot.
+- User references are text to match Better Auth IDs. Application record IDs are UUIDs.
+- Schedule entries have timezone-aware start and end times.
+- Photo uploads store bytes in Postgres and require a session for retrieval.
+- Media and AI activity can reference a task. Deleting a task removes assignments
+  and clears its media and AI references. Deleting a team removes memberships
+  and clears the team on its tasks.
 
-Deleting an event deletes its application records. Deleting a task removes its
-assignments and clears task references on media and AI activity. Callers must
-ensure linked members, teams, tasks, media, and AI activity belong to the same
-event; foreign keys validate each referenced record, but do not enforce this
-shared event rule.
+Migration `0003` removes the legacy event/member tables and discards their demo
+memberships and assignments. Existing schedule entries use their start time as
+an end-time placeholder until a duration is supplied.
 
 The migration runner uses the matching direct connection over WebSockets. If
 `DATABASE_URL_UNPOOLED` points at a different database branch, it derives the
 direct URL from `DATABASE_URL` instead. Migration history is stored by Drizzle.
 
+## Demo data
+
+After migrations, run `pnpm --filter backend db:seed` to seed the configured
+`DATABASE_URL`. Use your development branch. Existing application rows and auth
+users, accounts, sessions, and verification records are preserved.
+
+The script uses [`drizzle-seed`](https://orm.drizzle.team/docs/seed-overview)
+with seed `20261025` and generator version `2`. This seed number separates the
+new dataset from the previous event-based fixtures. It creates one demo team, four tasks,
+three schedule entries with end times after their starts, and sample transcripts
+and AI activity. It gives up to four existing auth users without a team new memberships and
+one task assignment each. If no users exist, memberships and assignments are
+left empty. This script does not create a login.
+
+Seeding runs in one transaction. An existing demo team causes the script to skip
+seeding. The team ID is
+`0c0e0000-0000-4000-8000-000000000001`.
+
 ## API
+
+See [the app API contract](./API.md) for dashboard, task mutations, photo uploads,
+the AI placeholder, request fields, and error codes. All signed-in users have the
+same dashboard and task permissions.
 
 - `/api/auth/*`: Better Auth email/password sign-up, sign-in, session, and sign-out.
 - `GET /api/me`: the signed-in user's ID, name, and email. Returns 401 without a
@@ -78,6 +96,13 @@ requests use `credentials: 'include'`.
 development database. It creates a disposable account, verifies password hashing,
 origin checks, protected access, session restoration, sign-in, and revocation on
 sign-out. It removes that account and its related records afterward.
+
+The seed test checks repeat runs, preserved edits and auth records, membership
+roles, task capacity, and schedule times. The migration test applies migrations
+to populated legacy tables in an isolated schema. Both tests roll back all
+verification changes. API tests create disposable records and clean them up.
+They verify dashboard responses, task mutations, concurrent claims, photo upload
+and authenticated retrieval, and the AI placeholder's lack of side effects.
 
 `pnpm --filter backend build` also emits API declarations used by the mobile
 client. Run it before checking mobile types on a fresh checkout. The root
