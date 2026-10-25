@@ -3,97 +3,73 @@ import { seed } from "drizzle-seed";
 import type { db } from "./db.js";
 import {
   aiActivity,
-  event,
-  eventOwner,
   media,
-  member,
   roleEnum,
   schedule,
   task,
   taskAssignee,
   team,
   teamMember,
+  user,
 } from "./schema.js";
 
-export const demoEventId = "0c0e0000-0000-4000-8000-000000000001";
+export const demoTeamId = "0c0e0000-0000-4000-8000-000000000001";
+export const seedTables = {
+  team,
+  teamMember,
+  task,
+  taskAssignee,
+  schedule,
+  media,
+  aiActivity,
+};
+
 type SeedTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-// Seed only application tables. Auth accounts are managed through Better Auth.
+// Seed application data using existing auth users. Credentials and sessions are untouched.
 export async function seedDemo(tx: SeedTransaction) {
-  const existing = await tx.query.event.findFirst({
-    where: eq(event.id, demoEventId),
+  const existing = await tx.query.team.findFirst({
+    where: eq(team.id, demoTeamId),
     columns: { id: true },
   });
   if (existing) return false;
 
   await seed(
     tx,
-    {
-      event,
-      member,
-      eventOwner,
-      team,
-      teamMember,
-      schedule,
-      task,
-      taskAssignee,
-      media,
-      aiActivity,
-    },
-    { seed: 42, version: "2" },
+    { team, schedule, task, media, aiActivity },
+    { seed: 20261025, version: "2" },
   ).refine((f) => ({
-    event: {
+    team: {
       count: 1,
       columns: {
-        id: f.default({ defaultValue: demoEventId }),
-        name: f.default({ defaultValue: "OnCue Demo Hackathon" }),
-        location: f.default({ defaultValue: "Austin Convention Center" }),
-        dates: f.default({ defaultValue: ["2026-10-24", "2026-10-25"] }),
-      },
-    },
-    member: {
-      count: 4,
-      columns: {
-        name: f.fullName(),
-        profilePic: f.default({ defaultValue: null }),
-      },
-      // One row per member prevents duplicate composite keys in these join tables.
-      with: { teamMember: 1, taskAssignee: 1 },
-    },
-    eventOwner: { count: 1 },
-    team: {
-      count: 2,
-      columns: {
-        teamName: f.valuesFromArray({
-          values: ["Operations", "Tech"],
-          isUnique: true,
-        }),
-      },
-    },
-    teamMember: {
-      columns: {
-        role: f.valuesFromArray({ values: roleEnum.enumValues }),
+        id: f.default({ defaultValue: demoTeamId }),
+        teamName: f.default({ defaultValue: "OnCue Demo Crew" }),
       },
     },
     schedule: {
       count: 3,
       columns: {
         activity: f.valuesFromArray({
-          values: ["Check-in opens", "Opening ceremony", "Project demos"],
+          values: ["Check-in opens", "Opening ceremony", "Volunteer briefing"],
           isUnique: true,
         }),
         room: f.valuesFromArray({
           values: ["Main lobby", "Main stage", "Exhibit hall"],
         }),
         startTime: f.date({
-          minDate: "2026-10-24T08:00:00-05:00",
-          maxDate: "2026-10-25T14:00:00-05:00",
+          minDate: "2026-10-25T08:00:00-05:00",
+          maxDate: "2026-10-25T10:00:00-05:00",
+        }),
+        endTime: f.date({
+          minDate: "2026-10-25T11:00:00-05:00",
+          maxDate: "2026-10-25T12:00:00-05:00",
         }),
       },
     },
     task: {
       count: 4,
       columns: {
+        teamId: f.default({ defaultValue: demoTeamId }),
         slots: f.int({ minValue: 1, maxValue: 4 }),
         assignment: f.valuesFromArray({
           values: [
@@ -139,6 +115,43 @@ export async function seedDemo(tx: SeedTransaction) {
       },
     },
   }));
+
+  const users = await tx
+    .select({ id: user.id })
+    .from(user)
+    .orderBy(user.id)
+    .limit(4);
+  if (users.length > 0) {
+    const userIds = users.map((user) => user.id);
+    const tasks = await tx
+      .select({ id: task.id })
+      .from(task)
+      .where(eq(task.teamId, demoTeamId));
+    await seed(
+      tx,
+      { teamMember, taskAssignee },
+      { seed: 20261025, version: "2" },
+    ).refine((f) => ({
+      teamMember: {
+        count: users.length,
+        columns: {
+          teamId: f.default({ defaultValue: demoTeamId }),
+          userId: f.valuesFromArray({ values: userIds, isUnique: true }),
+          role: f.valuesFromArray({ values: roleEnum.enumValues }),
+        },
+      },
+      taskAssignee: {
+        count: users.length,
+        columns: {
+          taskId: f.valuesFromArray({
+            values: tasks.map((task) => task.id),
+            isUnique: true,
+          }),
+          memberId: f.valuesFromArray({ values: userIds, isUnique: true }),
+        },
+      },
+    }));
+  }
 
   return true;
 }
