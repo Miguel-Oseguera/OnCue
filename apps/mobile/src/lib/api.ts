@@ -21,9 +21,13 @@ const authenticatedFetch: typeof fetch = async (input, init) => {
 export async function requestJSON(
   path: string,
   init: RequestInit = {},
+  options: { timeoutMs?: number } = {},
 ): Promise<unknown> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
+  const timeout = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? 15000,
+  );
   try {
     const response = await authenticatedFetch(
       new URL(path, backendURL).toString(),

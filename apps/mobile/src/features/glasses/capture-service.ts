@@ -5,6 +5,8 @@ import type { CaptureState } from "../../../modules/oncue-wearables/src/OncueWea
 export const captureAvailable =
   Platform.OS === "ios" && (native?.bridgeVersion ?? 0) >= 2;
 export const emptyCaptureState: CaptureState = {
+  collectingDescription: false,
+  currentDescription: "",
   enabled: false,
   listening: false,
   capturing: false,
@@ -35,10 +37,12 @@ export function observeCapture(
   return () => subscription.remove();
 }
 export function captureLabel(state: CaptureState): string {
+  if (state.collectingDescription) return "Listening for task description…";
   if (state.phase === "capturing") return "Taking photo…";
   if (state.phase === "saving") return "Saving photo…";
   if (state.listening) return "Listening for OnCue";
   const labels: Record<CaptureState["phase"], string> = {
+    describing: "Listening for task description…",
     off: "Hands-free is off",
     permissions: "Waiting for approval in Meta AI",
     starting: "Starting your glasses…",

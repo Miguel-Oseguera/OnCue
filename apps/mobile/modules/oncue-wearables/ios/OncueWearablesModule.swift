@@ -8,7 +8,7 @@ public class OncueWearablesModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("OncueWearables")
-    Constant("bridgeVersion") { 3 }
+    Constant("bridgeVersion") { 4 }
     Events("onConnectionChange", "onCaptureChange", "onVoiceLaunchChange")
 
     AsyncFunction("getStatus") { () async -> [String: Any] in
@@ -27,6 +27,15 @@ public class OncueWearablesModule: Module {
       }
     }
     OnStopObserving("onConnectionChange") { [weak self] in self?.removeObserver() }
+    AsyncFunction("setCaptureOwner") { (owner: String?) async in
+      await MainActor.run { OncueWearablesCapture.shared.setOwner(owner) }
+    }
+    AsyncFunction("setReportDescription") { (id: String, owner: String, text: String) async throws -> [String: Any] in
+      try await MainActor.run { try OncueWearablesCapture.shared.setDescription(id: id, owner: owner, text: text) }
+    }
+    AsyncFunction("setReportDelivery") { (id: String, owner: String, status: String, message: String?, taskIds: [String]) async throws -> [String: Any] in
+      try await MainActor.run { try OncueWearablesCapture.shared.setDelivery(id: id, owner: owner, status: status, message: message, taskIds: taskIds) }
+    }
     AsyncFunction("getCaptureState") { () async -> [String: Any] in
       await MainActor.run { OncueWearablesCapture.shared.snapshot() }
     }
@@ -68,6 +77,8 @@ public class OncueWearablesModule: Module {
     OnAppBecomesActive { Task { @MainActor in OncueWearablesVoiceLaunch.shared.refresh() } }
     OnAppContextDestroys { Task { @MainActor in
       OncueWearablesVoiceLaunch.shared.setAllowed(nil)
+      OncueWearablesCapture.shared.interruptDeliveries()
+      OncueWearablesCapture.shared.setOwner(nil)
       _ = OncueWearablesCapture.shared.stop()
     } }
     OnDestroy { [weak self] in self?.removeObserver(); self?.removeCaptureObserver(); self?.removeVoiceObserver() }

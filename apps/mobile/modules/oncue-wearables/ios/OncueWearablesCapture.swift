@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 import ImageIO
 import UniformTypeIdentifiers
 import MWDATCore
@@ -11,9 +12,18 @@ private struct SavedCapture: Codable, Sendable {
   let capturedAt: String
   let source: String
   let deviceId: String
+  var description: String?
+  var ownerId: String?
+  var delivery: String?
+  var deliveryMessage: String?
+  var taskIds: [String]?
   var dictionary: [String: Any] {
     ["id": id, "uri": CaptureFiles.directory.appendingPathComponent(fileName).absoluteString,
-     "capturedAt": capturedAt, "source": source, "deviceId": deviceId]
+     "capturedAt": capturedAt, "source": source, "deviceId": deviceId,
+     "description": description.map { $0 as Any } ?? NSNull(),
+     "ownerId": ownerId.map { $0 as Any } ?? NSNull(),
+     "delivery": delivery ?? "local", "deliveryMessage": deliveryMessage.map { $0 as Any } ?? NSNull(),
+     "taskIds": taskIds ?? []]
   }
 }
 
@@ -69,6 +79,16 @@ final class OncueWearablesCapture {
   private var acceptingPhoto = false
   private var photoStopped = true
   private var source = "voice"
+  private var ownerId: String?
+  private var captureOwnerId: String?
+  private var collectingDescription = false
+  private var descriptionText = ""
+  private var descriptionSettled = true
+  private var pendingPhoto: SavedCapture?
+  private var descriptionTimeout: Task<Void, Never>?
+  private var descriptionLimit: Task<Void, Never>?
+
+  private var soundNotice: String?
   private var error: String?
   private var generation = UUID()
   private var lastCommand = Date.distantPast
@@ -78,13 +98,23 @@ final class OncueWearablesCapture {
   private init() {
     if let data = try? Data(contentsOf: CaptureFiles.manifest),
       let saved = try? JSONDecoder().decode([SavedCapture].self, from: data) {
-      captures = saved.filter { FileManager.default.fileExists(atPath: CaptureFiles.directory.appendingPathComponent($0.fileName).path) }
+      captures = saved.filter { FileManager.default.fileExists(atPath: CaptureFiles.directory.appendingPathComponent($0.fileName).path) }.map { capture in
+        var restored = capture
+        if restored.delivery == "uploading" {
+          restored.delivery = "uncertain"
+          restored.deliveryMessage = "OnCue closed before delivery was confirmed. Check your tasks before retrying."
+        }
+        return restored
+      }
+      try? JSONEncoder().encode(captures).write(to: CaptureFiles.manifest, options: .atomic)
     }
   }
 
   func snapshot() -> [String: Any] {
     ["enabled": enabled, "listening": listening, "capturing": capturing || saving,
      "readyForCapture": enabled && listening && !capturing && !saving && photoStopped,
+     "soundNotice": soundNotice.map { $0 as Any } ?? NSNull(),
+     "collectingDescription": collectingDescription, "currentDescription": descriptionText,
      "phase": phase, "error": error.map { $0 as Any } ?? NSNull(),
      "photos": captures.map { $0.dictionary }]
   }
@@ -144,6 +174,7 @@ final class OncueWearablesCapture {
   }
 
   func stop() -> [String: Any] {
+    settleDescription()
     enabled = false; listening = false
     startupTimeout?.cancel(); captureTimeout?.cancel()
     if session != nil {
@@ -209,21 +240,15 @@ final class OncueWearablesCapture {
       }
     })
     tokens.append(attached.transcriptionPublisher.listen { [weak self] result in
-      guard result.isFinal, let action = OncueCaptureCommand.action(result.text) else { return }
       Task { @MainActor in
-        guard let self, self.generation == run, self.enabled, self.listening else { return }
-        // Stop must bypass capture busy/cooldown checks.
-        if action == .stop { _ = self.stop(); return }
-        guard !self.capturing, Date().timeIntervalSince(self.lastCommand) > 3 else { return }
-        self.lastCommand = Date()
-        do { try self.capture(trigger: "voice") }
-        catch { self.error = error.localizedDescription; self.publish() }
+        guard let self, self.generation == run else { return }
+        self.transcription(result.text, final: result.isFinal)
       }
     })
     attached.start()
   }
 
-  private func capture(trigger: String) throws {
+  private func capture(trigger: String, initialDescription: String = "") throws {
     guard enabled, session?.state == .started, !capturing, photoStopped else { return }
     guard let session else { return }
     if camera == nil {
@@ -255,7 +280,16 @@ final class OncueWearablesCapture {
         }
       })
     }
-    source = trigger; capturing = true; photoStopped = false
+    source = trigger; captureOwnerId = ownerId; pendingPhoto = nil
+    descriptionText = String(initialDescription.prefix(10_000)); descriptionSettled = false
+    collectingDescription = true
+    scheduleDescriptionEnd(seconds: descriptionText.isEmpty ? 8 : 2)
+    descriptionLimit = Task { [weak self] in
+      try? await Task.sleep(for: .seconds(30))
+      guard !Task.isCancelled else { return }
+      self?.settleDescription()
+    }
+    capturing = true; photoStopped = false
     acceptingPhoto = true; captureRequested = false; error = nil; phase = "capturing"; publish()
     photo?.start()
     let run = generation
@@ -275,20 +309,130 @@ final class OncueWearablesCapture {
     do {
       let name = try await Task.detached(priority: .utility) { try CaptureFiles.saveImage(data, id: id) }.value
       let saved = SavedCapture(id: id, fileName: name, capturedAt: ISO8601DateFormatter().string(from: timestamp), source: trigger, deviceId: device)
+      pendingPhoto = saved
+      photo?.stop()
+      if !descriptionSettled { phase = "describing"; publish() }
+      completeReportIfReady()
+    } catch { captureFailed(error.localizedDescription) }
+  }
+
+  func setOwner(_ value: String?) { ownerId = value }
+
+  func interruptDeliveries() {
+    guard captures.contains(where: { $0.delivery == "uploading" }) else { return }
+    var updated = captures
+    for index in updated.indices where updated[index].delivery == "uploading" {
+      updated[index].delivery = "uncertain"
+      updated[index].deliveryMessage = "The app reloaded before delivery was confirmed. Check tasks before retrying."
+    }
+    do {
+      try JSONEncoder().encode(updated).write(to: CaptureFiles.manifest, options: .atomic)
+      captures = updated; publish()
+    } catch { self.error = error.localizedDescription; publish() }
+  }
+
+  func setDescription(id: String, owner: String, text: String) throws -> [String: Any] {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed.count <= 10_000,
+      let index = captures.firstIndex(where: { $0.id == id && $0.ownerId == owner }),
+      ["local", "uncertain", "error"].contains(captures[index].delivery ?? "local") else {
+      throw CaptureFailure("This report cannot be edited while queued, sending, or already processed.")
+    }
+    var updated = captures; updated[index].description = trimmed
+    try JSONEncoder().encode(updated).write(to: CaptureFiles.manifest, options: .atomic)
+    captures = updated; publish(); return snapshot()
+  }
+
+  func setDelivery(id: String, owner: String, status: String, message: String?, taskIds: [String]) throws -> [String: Any] {
+    guard ["pending", "uploading", "sent", "error", "uncertain"].contains(status),
+      let index = captures.firstIndex(where: { $0.id == id && $0.ownerId == owner }) else {
+      throw CaptureFailure("This report is unavailable for the current account.")
+    }
+    let current = captures[index].delivery ?? "local"
+    let allowed: [String: [String]] = [
+      "pending": ["local", "error", "uncertain"],
+      "uploading": ["pending"], "sent": ["uploading"],
+      "uncertain": ["uploading"], "error": ["uploading"],
+    ]
+    guard allowed[status]?.contains(current) == true else {
+      throw CaptureFailure("This report's delivery state has changed. Refresh before trying again.")
+    }
+    var updated = captures
+    updated[index].delivery = status; updated[index].deliveryMessage = message
+    updated[index].taskIds = taskIds
+    try JSONEncoder().encode(updated).write(to: CaptureFiles.manifest, options: .atomic)
+    captures = updated; publish(); return snapshot()
+  }
+
+  private func transcription(_ text: String, final: Bool) {
+    guard enabled, listening else { return }
+    let action = OncueCaptureCommand.action(text)
+    if final, action == .stop {
+      NSLog("[OnCue] Stop command recognized; ending hands-free session")
+      _ = stop(); return
+    }
+    if collectingDescription {
+      // A repeated command is not part of the task description.
+      guard action != .capture, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+      if final {
+        descriptionText = String((descriptionText + " " + text).trimmingCharacters(in: .whitespacesAndNewlines).prefix(10_000))
+        publish()
+      }
+      scheduleDescriptionEnd(seconds: 2)
+      return
+    }
+    guard final, action == .capture, !capturing, !saving,
+      Date().timeIntervalSince(lastCommand) > 3 else { return }
+    lastCommand = Date()
+    NSLog("[OnCue] Capture command recognized")
+    do { try capture(trigger: "voice", initialDescription: OncueCaptureCommand.description(text) ?? "") }
+    catch { self.error = error.localizedDescription; publish() }
+  }
+
+  private func scheduleDescriptionEnd(seconds: Double) {
+    descriptionTimeout?.cancel()
+    descriptionTimeout = Task { [weak self] in
+      try? await Task.sleep(for: .seconds(seconds))
+      guard !Task.isCancelled else { return }
+      self?.settleDescription()
+    }
+  }
+  private func settleDescription() {
+    guard !descriptionSettled else { return }
+    descriptionTimeout?.cancel(); descriptionLimit?.cancel()
+    descriptionSettled = true; collectingDescription = false
+    NSLog("[OnCue] Description finalized (%ld characters)", descriptionText.count)
+    completeReportIfReady(); publish()
+  }
+  private func completeReportIfReady() {
+    guard descriptionSettled, var saved = pendingPhoto else { return }
+    saved.description = descriptionText
+    saved.ownerId = captureOwnerId
+    saved.delivery = descriptionText.isEmpty || captureOwnerId == nil ? "local" : "pending"
+    saved.deliveryMessage = descriptionText.isEmpty ? "No description heard. Add one to send this report." : nil
+    do {
       let updated = [saved] + captures
       try JSONEncoder().encode(updated).write(to: CaptureFiles.manifest, options: .atomic)
-      captures = updated
+      captures = updated; pendingPhoto = nil
+      NSLog("[OnCue] Photo saved; report %@ is %@", saved.id, saved.delivery ?? "local")
+      if !descriptionText.isEmpty {
+        soundNotice = CaptureConfirmationDing.shared.play()
+        if let notice = soundNotice { NSLog("[OnCue] %@", notice) }
+      }
       finishCapture()
     } catch { captureFailed(error.localizedDescription) }
   }
 
   private func finishCapture() {
+    descriptionTimeout?.cancel(); descriptionLimit?.cancel()
+    collectingDescription = false; descriptionSettled = true; pendingPhoto = nil
     acceptingPhoto = false; capturing = false; saving = false; photo?.stop()
     if enabled { phase = listening ? "listening" : "paused" }
     else if session == nil { phase = error == nil ? "off" : "error" }
     publish()
   }
   private func captureFailed(_ message: String) {
+    NSLog("[OnCue] Capture failed: %@", message)
     error = message; captureTimeout?.cancel(); finishCapture()
   }
   private func fail(_ message: String) {
@@ -297,9 +441,91 @@ final class OncueWearablesCapture {
   }
   private func releaseSession() {
     startupTimeout?.cancel(); captureTimeout?.cancel()
+    settleDescription()
     generation = UUID(); enabled = false; listening = false; capturing = false; acceptingPhoto = false
     let oldTokens = tokens; tokens = []
     Task { for token in oldTokens { await token.cancel() } }
     speech = nil; photo = nil; camera = nil; session = nil; photoStopped = true
+  }
+}
+
+
+/// Short native cue: works independently of React and never gates report delivery.
+@MainActor
+private final class CaptureConfirmationDing: NSObject, AVAudioPlayerDelegate {
+  static let shared = CaptureConfirmationDing()
+  private var player: AVAudioPlayer?
+  private var ownsPlaybackSession = false
+  private static let tone: Data = {
+    let sampleRate = 22050
+    let count = Int(Double(sampleRate) * 0.38)
+    var data = Data()
+    func word(_ value: UInt16) {
+      var little = value.littleEndian
+      withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+    }
+    func doubleWord(_ value: UInt32) {
+      var little = value.littleEndian
+      withUnsafeBytes(of: &little) { data.append(contentsOf: $0) }
+    }
+    data.append(contentsOf: "RIFF".utf8); doubleWord(UInt32(36 + count * 2))
+    data.append(contentsOf: "WAVEfmt ".utf8); doubleWord(16)
+    word(1); word(1); doubleWord(UInt32(sampleRate)); doubleWord(UInt32(sampleRate * 2))
+    word(2); word(16); data.append(contentsOf: "data".utf8); doubleWord(UInt32(count * 2))
+    for index in 0..<count {
+      let time = Double(index) / Double(sampleRate)
+      let attack = min(1, time / 0.008)
+      let release = min(1, Double(count - 1 - index) / (Double(sampleRate) * 0.025))
+      let envelope = attack * release * exp(-9 * time)
+      let bell = sin(2 * Double.pi * 1046.5 * time) + 0.3 * sin(2 * Double.pi * 2093 * time)
+      let sample = Int16(bell * envelope * 0.22 * Double(Int16.max))
+      word(UInt16(bitPattern: sample))
+    }
+    return data
+  }()
+
+  func play() -> String? {
+    do {
+      let audio = AVAudioSession.sharedInstance()
+      // Do not replace or deactivate an existing recording/communication session.
+      ownsPlaybackSession = ![.playAndRecord, .record, .multiRoute].contains(audio.category)
+      if ownsPlaybackSession {
+        try audio.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try audio.setActive(true)
+      }
+      let newPlayer = try AVAudioPlayer(data: Self.tone, fileTypeHint: AVFileType.wav.rawValue)
+      player = newPlayer; newPlayer.delegate = self; newPlayer.volume = 0.7
+      guard newPlayer.prepareToPlay(), newPlayer.play() else {
+        finish(newPlayer)
+        return "Report saved, but the confirmation ding could not play."
+      }
+      let routes = audio.currentRoute.outputs
+      NSLog("[OnCue] Confirmation ding playing via %@", routes.map { $0.portName }.joined(separator: ", "))
+      let bluetooth = routes.contains { [.bluetoothA2DP, .bluetoothHFP, .bluetoothLE].contains($0.portType) }
+      return bluetooth ? nil : "The ding is using your iPhone’s current audio output. Select your Meta glasses in Control Center to hear it there."
+    } catch {
+      if let player { finish(player) }
+      else { releasePlaybackSession() }
+      return "Report saved, but the confirmation ding is unavailable: \(error.localizedDescription)"
+    }
+  }
+
+  nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+    Task { @MainActor in self.finish(player) }
+  }
+  nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: (any Error)?) {
+    Task { @MainActor in self.finish(player) }
+  }
+  private func finish(_ completed: AVAudioPlayer) {
+    guard player === completed else { return }
+    player = nil; releasePlaybackSession()
+  }
+  private func releasePlaybackSession() {
+    guard ownsPlaybackSession else { return }
+    ownsPlaybackSession = false
+    let audio = AVAudioSession.sharedInstance()
+    if audio.category == .playback && audio.categoryOptions.contains(.mixWithOthers) {
+      try? audio.setActive(false, options: .notifyOthersOnDeactivation)
+    }
   }
 }
