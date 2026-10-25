@@ -16,6 +16,7 @@ export type GlassesStatus = {
   error: string | null;
 };
 export type GlassesEvents = {
+  onVoiceLaunchChange: (status: VoiceLaunchState) => void;
   onCaptureChange: (status: CaptureState) => void;
   onConnectionChange: (status: GlassesStatus) => void;
 };
@@ -26,8 +27,16 @@ export type CapturedPhoto = {
   capturedAt: string;
   source: "voice" | "button";
   deviceId: string;
+  description?: string | null;
+  ownerId?: string | null;
+  delivery?: "local" | "pending" | "uploading" | "sent" | "uncertain" | "error";
+  deliveryMessage?: string | null;
+  taskIds?: string[];
 };
 export type CaptureState = {
+  soundNotice?: string | null;
+  collectingDescription: boolean;
+  currentDescription: string;
   enabled: boolean;
   listening: boolean;
   capturing: boolean;
@@ -39,9 +48,16 @@ export type CaptureState = {
     | "listening"
     | "capturing"
     | "saving"
+    | "describing"
     | "paused"
     | "stopping"
     | "error";
   error: string | null;
   photos: CapturedPhoto[];
+};
+
+export type VoiceLaunchState = {
+  ready: boolean;
+  error: string | null;
+  lastLaunchId: string | null;
 };

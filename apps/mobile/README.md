@@ -139,8 +139,8 @@ missing-framework error. Keep the plugin when regenerating the iOS project.
 
 1. Connect your glasses, then open **Hands-free capture** on the dashboard.
 2. Tap **Start hands-free mode** and approve camera and microphone access in Meta AI.
-3. Wait for **Listening for OnCue**, then say **“OnCue, capture this task.”**
-4. Review the photo in the capture tray. Repeat the phrase for another photo.
+3. Wait for **Listening for OnCue**, then say **“OnCue, capture this task. The projector in room 204 is broken.”**
+4. Pause for two seconds; the app sends the photo and description to backend AI. Review delivery and the resulting tasks in the app.
 5. Tap **Stop listening** here or on the dashboard when finished.
 
 DAT 1.0 Speech and standalone Photo are experimental and must be enabled for the
@@ -152,16 +152,16 @@ restored automatically after launch. Locked/background behavior needs real-devic
 verification; Bluetooth background mode alone does not establish that guarantee.
 No phone microphone fallback, video streaming, or artificial audio keepalive is used.
 
-Only complete, final capture commands are acted on. Case, punctuation and “On cue” /
+Final capture commands must begin with the capture phrase; the following text becomes the task description. Case, punctuation and “On cue” /
 “On queue” recognition variants are accepted. Other speech is discarded. A capture
 in progress and a short cooldown prevent duplicate photos. Startup/capture timeouts
 surface errors; session, speech and photo errors are shown in the app.
 
 Photos are normalized to JPEG (up to 2560px), saved atomically under the app's
-Documents/OnCueCaptures folder and indexed in captures.json. They survive app
-restarts and app updates. Uninstalling the app removes them. They are not added to
-Photos, uploaded, sent to AI, or automatically converted into tasks. Preview URIs
-are reconstructed from file names on launch so container path changes are safe.
+Documents/OnCueCaptures folder and indexed in captures.json with their description,
+account owner and delivery state. They survive app restarts and app updates.
+Uninstalling removes them. They are not added to Photos. Preview URIs are
+reconstructed from file names on launch so container path changes are safe.
 
 Native command matcher check (run in apps/mobile):
 
@@ -174,3 +174,91 @@ On hardware, verify permission denial/retry, repeated voice captures, button cap
 leaving the capture screen, stop while starting, disconnect/reconnect, persistence
 across relaunch, and locked-phone capture. No live glasses capture is verified by
 the unit checks or native build alone.
+
+
+### Voice start and stop
+
+With a configured Meta integration, say **“Hey Meta, start OnCue”** to launch or
+foreground OnCue and start hands-free mode. Say **“OnCue, stop listening”** to stop
+the sensor session, including during photo capture or the capture cooldown. Once
+stopped, custom OnCue speech cannot restart itself; use the Meta launch command or
+the Start button. Stop never starts listening again automatically.
+
+The native invocation stream is initialized at app launch and follows the connected
+glasses independently of sensor sessions. Every received LaunchApp is acknowledged
+once. Cold launch waits up to 15 seconds for the existing signed-in session to be
+restored; signed-out launches fail without starting sensors. The authenticated UI
+opens the capture screen for each new invocation. An accepted start response means
+session startup was requested; the screen reports actual Speech readiness/errors.
+The stream uses Meta's invocation channel, not a continuously active OnCue mic.
+
+**Required Meta-side setup (not supplied by the local code):**
+
+- In Wearables Developer Center, add the iOS mobile app bundle identifier
+  `com.oncue.sierra.dev` and set its spoken app name to **OnCue**.
+- Save the configuration, then create a **new integration version**. The DAT 1.0
+  guide says this includes Voice Invocation permission; there is no separate toggle.
+- Make the configured development/beta integration available to your testing account
+  and finish registration/permission approval in Meta AI. The current local build
+  still uses Developer Mode identifiers; do not assume its `MetaAppID: 0` creates
+  a routable voice app. Use verified project configuration when required.
+
+Reference: https://wearables.developer.meta.com/docs/develop/dat/voice-invocations/
+
+Hardware test: start by voice while OnCue is open, then while backgrounded/cold;
+confirm the capture page opens and reaches Listening. Capture a photo, stop by
+voice, and confirm another capture phrase does nothing. Start through Meta again.
+Also test stop during transfer, handoff/removal, denied permissions, and signed-out
+launch. SDK build and command tests do not verify Meta's app-name routing.
+
+
+### Photo + spoken description → backend AI
+
+Say **“OnCue, capture this task. The projector in room 204 is broken.”**
+A description in the same final utterance is extracted without the command prefix.
+If speech recognition splits it into segments, OnCue accepts following description
+segments until a two-second pause. A bare capture command waits up to eight seconds
+for a description; a report window lasts at most 30 seconds. Stop remains a complete
+utterance and is never appended to a description. Speech outside this window is
+ignored. Only one capture/description bundle is active at once.
+
+The saved photo and finalized description are paired before the frontend queues a
+request. New described reports are sent automatically while signed in; missing
+text stays local with an editable description field. Legacy photos remain local.
+Each report retains the account that captured it; a different account cannot
+silently send it. Leaving the capture screen does not unmount the app-level sender.
+If iOS suspends JS, pending native reports wait until JS runs again; uninterrupted
+locked-phone networking is not guaranteed.
+
+The frontend uses the existing authenticated transport to POST **one multipart
+request** to `/api/ai`: `text` (description), `source` (`glasses`), and `images`
+(the local JPEG as a file). No separate `/api/media` upload is required by the
+current backend. The API helper keeps its existing 15s default; AI submission
+uses 120s. The backend owns AI execution and task creation; no AI provider is
+contacted directly from the app. Dashboard data refreshes after confirmed success.
+
+Delivery is persisted as pending → uploading → sent. Uploading is saved before
+POST. There is one app-level sender and no automatic retry of ambiguous requests.
+On network failure, timeout, unexpected response, or interruption during upload,
+check tasks before using **Resend — may duplicate tasks**. The existing backend
+has no idempotency key, so the client cannot guarantee exactly-once task creation
+after a lost response. Sent reports are not sent again on launch. Pending reports
+resume for their owning account. Unit tests use a stub backend and create no tasks.
+
+
+### Capture confirmation sound and logs
+
+A short native ding plays once after a photo and a non-empty finalized description
+have both been saved locally. It confirms capture, not backend AI completion.
+Missing descriptions and failed saves do not produce a success ding. Audio failure
+never blocks report submission. The sound follows iOS's current media output;
+select the glasses in Control Center to hear it there. The capture screen explains
+when output is not Bluetooth. Playback mixes with other audio and does not replace
+an existing recording session. Audible routing/volume need a physical glasses test.
+
+In Xcode, attach the debugger to the running **mobile** process, show the debug
+console (Shift–Command–Y), and filter for **OnCue**. Native logs mark command
+recognition, description finalization (character count only), photo save, and the
+ding's audio route. Frontend logs mark delivery start and backend confirmation.
+They do not print the description, image bytes, authentication cookies, or tokens.
+The capture page's delivery status remains the simplest way to check progress.

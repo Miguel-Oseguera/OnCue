@@ -1,3 +1,5 @@
+import { DeliveryUI } from "./delivery-ui";
+import { VoiceLaunchStatus } from "./voice-launch-status";
 import { useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { Image } from "expo-image";
@@ -50,6 +52,7 @@ export default function CaptureScreen() {
         onBack={() => router.navigate("/")}
       />
       <View style={t.card}>
+        <VoiceLaunchStatus />
         <View style={t.row}>
           <View
             style={{
@@ -65,18 +68,24 @@ export default function CaptureScreen() {
           <Text style={t.demo}>BETA</Text>
         </View>
         <Text style={[t.title, { fontSize: 26, lineHeight: 34 }]}>
-          “OnCue, capture this task.”
+          “OnCue, capture this task. The projector in room 204 is broken.”
         </Text>
         <Text style={t.body}>
-          Turn on hands-free mode once, then use your voice for each photo. Your
-          glasses microphone stays active until you stop listening or the
-          session ends.
+          Say the capture phrase followed by the task description. Pause for two
+          seconds when finished. OnCue sends the saved photo and your
+          description together to the backend AI. Your glasses microphone stays
+          active until you stop listening or the session ends.
         </Text>
         <Text style={t.small}>
           Camera and microphone approval may open Meta AI. Speech and photo
           capture must be enabled for OnCue in Wearables Developer Center.
           Locked-phone behavior is still being tested.
         </Text>
+        {state.collectingDescription && (
+          <Text style={t.body}>
+            {state.currentDescription || "Describe the issue and location now…"}
+          </Text>
+        )}
         {!captureAvailable && (
           <Notice text="Use the updated OnCue development build on your iPhone with your glasses connected." />
         )}
@@ -110,6 +119,7 @@ export default function CaptureScreen() {
         {(error || statusError || state.error) && (
           <Notice text={error ?? statusError ?? state.error ?? ""} />
         )}
+        {state.soundNotice && <Text style={t.small}>{state.soundNotice}</Text>}
         {state.phase === "paused" && (
           <Text style={t.small}>
             The glasses paused this session. Waiting for them to resume; no
@@ -144,6 +154,7 @@ export default function CaptureScreen() {
               {photo.source === "voice" ? "Voice capture" : "Button capture"} ·
               Saved on this iPhone
             </Text>
+            <DeliveryUI key={photo.id} photo={photo} />
             {state.photos.length > 1 && (
               <ScrollView
                 horizontal
@@ -184,8 +195,10 @@ export default function CaptureScreen() {
           </View>
         )}
         <Text style={t.small}>
-          Photos stay in OnCue on this iPhone. Nothing is uploaded, sent to AI,
-          or turned into a task automatically. Other speech is discarded.
+          New reports with a description are sent automatically to OnCue’s
+          backend AI, which may create tasks. Saved photos and delivery status
+          remain on this iPhone. Other speech is discarded outside the
+          description window.
         </Text>
       </View>
     </Page>
