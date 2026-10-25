@@ -14,6 +14,7 @@ import { authClient } from "@/lib/auth-client";
 import { dashboardColors as c } from "./dashboard-theme";
 import { Dashboard, Task, TaskStatus } from "./service";
 import { useDashboard } from "./use-dashboard";
+import { testNotification } from "@/lib/notifications";
 
 const statusLabels: Record<TaskStatus, string> = {
   open: "Open",
@@ -152,6 +153,24 @@ export default function DashboardScreen() {
             One place to keep every moving part moving.
           </Text>
         </View>
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => {
+            void testNotification().catch((error) => {
+              console.error("Notification test failed:", error);
+            });
+          }}
+          style={{
+            backgroundColor: c.accent,
+            padding: 16,
+            borderRadius: 12,
+            alignItems: "center",
+          }}
+        >
+          <Text style={{ color: "#FFFFFF", fontWeight: "700" }}>
+            🔔 Test Notification
+          </Text>
+        </Pressable>
         {loading && !data && (
           <ActivityIndicator
             accessibilityLabel="Loading dashboard"

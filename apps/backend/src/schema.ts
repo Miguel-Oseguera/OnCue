@@ -166,3 +166,40 @@ export const mediaRelations = relations(media, ({ one }) => ({
 export const aiActivityRelations = relations(aiActivity, ({ one }) => ({
   task: one(task, { fields: [aiActivity.taskId], references: [task.id] }),
 }));
+
+// Registered devices that can receive OnCue push notifications.
+export const pushToken = pgTable(
+  "push_token",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+
+    token: text("token").notNull(),
+
+    platform: text("platform", {
+      enum: ["ios", "android"],
+    }).notNull(),
+
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("push_token_token_idx").on(table.token),
+    index("push_token_user_id_idx").on(table.userId),
+  ],
+);
+
+export const pushTokenRelations = relations(pushToken, ({ one }) => ({
+  user: one(user, {
+    fields: [pushToken.userId],
+    references: [user.id],
+  }),
+}));
