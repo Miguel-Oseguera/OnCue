@@ -33,6 +33,15 @@ export default function OnCueTabs() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="teams"
+        options={{
+          title: "Teams",
+          tabBarIcon: ({ color }) => (
+            <Text style={{ color, fontSize: 24 }}>♧</Text>
+          ),
+        }}
+      />
       <Tabs.Screen name="explore" options={{ href: null }} />
     </Tabs>
   );

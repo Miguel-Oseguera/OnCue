@@ -145,28 +145,34 @@ export function Heading({
   title,
   subtitle,
   back = false,
+  section = "TASKS",
+  backLabel = "All tasks",
+  onBack = backToTasks,
 }: {
   title: string;
   subtitle: string;
   back?: boolean;
+  section?: string;
+  backLabel?: string;
+  onBack?: () => void;
 }) {
   return (
     <View style={{ gap: 10 }}>
       {back && (
         <Pressable
           accessibilityRole="button"
-          onPress={backToTasks}
+          onPress={onBack}
           style={{
             minHeight: 44,
             justifyContent: "center",
             alignSelf: "flex-start",
           }}
         >
-          <Text style={t.link}>‹ All tasks</Text>
+          <Text style={t.link}>‹ {backLabel}</Text>
         </Pressable>
       )}
       <View style={t.row}>
-        <Text style={t.eyebrow}>ONCUE / TASKS</Text>
+        <Text style={t.eyebrow}>ONCUE / {section}</Text>
         <View style={{ flex: 1 }} />
         <Text style={t.demo}>MOCK PREVIEW</Text>
       </View>
