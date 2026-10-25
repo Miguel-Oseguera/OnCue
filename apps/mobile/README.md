@@ -147,8 +147,8 @@ DAT 1.0 Speech and standalone Photo are experimental and must be enabled for the
 app in Wearables Developer Center; they are not available for production release.
 The native controller owns a sustained session independently of the current React
 screen. Pauses wait for SDK resume; terminal sessions require explicit restart.
-Signing out or destroying the JS app context stops the session. Listening is never
-restored automatically after launch. Locked/background behavior needs real-device
+Signing out or destroying the JS app context stops the session. Production listening is never restored automatically after launch. The development
+demo currently activates hands-free once after sign-in. Locked/background behavior needs real-device
 verification; Bluetooth background mode alone does not establish that guarantee.
 No phone microphone fallback, video streaming, or artificial audio keepalive is used.
 
@@ -248,7 +248,7 @@ resume for their owning account. Unit tests use a stub backend and create no tas
 
 ### Capture confirmation sound and logs
 
-A short native ding plays once after a photo and a non-empty finalized description
+A short acknowledgement tone plays when the capture phrase is recognized. A completion ding plays after a photo and a non-empty finalized description
 have both been saved locally. It confirms capture, not backend AI completion.
 Missing descriptions and failed saves do not produce a success ding. Audio failure
 never blocks report submission. The sound follows iOS's current media output;
@@ -271,3 +271,31 @@ partial/final transcript arrival (character counts only), capture and delivery.
 Partial speech cancels the completion timer; only a final transcript followed by
 three seconds without further speech ends the description. The 60-second safety
 limit keeps unfinished descriptions local for review instead of sending fragments.
+
+
+### Verified glasses-to-backend demo
+
+On the connected physical glasses, Speech reached started, recognized a capture
+command inside a final speech segment, and captured a photo with the spoken
+description. The frontend sent both to /api/ai; database verification confirmed a
+new task, linked ai_activity report, and linked JPEG in media.
+
+Command matching accepts a wake phrase within an ASR speech block (including
+OnCue / On cue / On queue / On Q variants). Explicit negations remain rejected.
+Medium-resolution/quality standalone photos reduce Bluetooth transfer time. Initial
+transfer allowance is 120s; progress refreshes a 45s idle watchdog, with a 180s total
+cap. A progressing transfer no longer hits the former hard 45s timeout.
+
+Expo 58 upload uses an expo-file-system File/Blob in multipart FormData; legacy
+{uri,name,type} attachments are unsupported by Expo fetch. The unchanged backend
+receives text, source=glasses, and images. Report delivery is confirmed before the
+dashboard refreshes. The known client-only failed submission was retried once during
+debugging; no unconditional retry remains in startup code.
+
+For the current development demo, hands-free mode activates once after sign-in.
+Keep the glasses worn and unfolded; off-face/folded devices can reject session
+startup. Camera/microphone permissions must be granted in Meta AI; approvals that
+finish after an SDK timeout require retrying startup. Stop with “OnCue, stop
+listening.” Meta voice launch still requires completing the Developer Center app
+configuration and creating an integration version; this is separate from custom
+OnCue speech while the app's hands-free session is active.

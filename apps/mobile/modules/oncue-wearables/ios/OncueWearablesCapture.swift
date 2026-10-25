@@ -64,6 +64,8 @@ final class OncueWearablesCapture {
   static let shared = OncueWearablesCapture()
   private var session: DeviceSession?
   private var speech: Speech?
+  private var debugStartAttempted = false
+  private var photoOnlySession = false
   private var camera: Camera?
   private var photo: Photo?
   private var tokens: [any AnyListenerToken] = []
@@ -98,6 +100,9 @@ final class OncueWearablesCapture {
   private var lastCommand = Date.distantPast
   private var startupTimeout: Task<Void, Never>?
   private var captureTimeout: Task<Void, Never>?
+  private var captureHardDeadline: Task<Void, Never>?
+  private var lastTransferFraction = 0.0
+  private var acknowledgedSpeechCommand = false
 
   private init() {
     if let data = try? Data(contentsOf: CaptureFiles.manifest),
@@ -164,6 +169,9 @@ final class OncueWearablesCapture {
       guard let device = Wearables.shared.devices.first(where: {
         (preferredDeviceId == nil || $0 == preferredDeviceId) && Wearables.shared.deviceForIdentifier($0)?.linkState == .connected
       }) else { throw CaptureFailure("No connected glasses. Power them on and check Meta AI.") }
+      if let selected = Wearables.shared.deviceForIdentifier(device) {
+        recordDiagnostic("Glasses state: link=\(selected.linkState), wear=\(selected.donState), hinges=\(selected.hingeState), compatibility=\(selected.compatibility().displayString)")
+      }
       let created = try Wearables.shared.createSession(deviceSelector: SpecificDeviceSelector(device: device))
       session = created; enabled = true; phase = "starting"
       tokens.append(created.statePublisher.listen { [weak self] state in
@@ -175,6 +183,7 @@ final class OncueWearablesCapture {
       tokens.append(created.errorPublisher.listen { [weak self] error in
         Task { @MainActor in
           guard let self, self.generation == run else { return }
+          self.recordSessionError(error)
           self.fail("Glasses session: \(error.localizedDescription)")
         }
       })
@@ -196,7 +205,7 @@ final class OncueWearablesCapture {
   func stop() -> [String: Any] {
     settleDescription()
     enabled = false; listening = false
-    startupTimeout?.cancel(); captureTimeout?.cancel()
+    startupTimeout?.cancel(); captureTimeout?.cancel(); captureHardDeadline?.cancel()
     if session != nil {
       phase = "stopping"; speech?.stop(); photo?.stop(); session?.stop()
     } else {
@@ -205,12 +214,64 @@ final class OncueWearablesCapture {
     publish(); return snapshot()
   }
 
-  func captureFromButton() throws -> [String: Any] {
-    guard enabled, listening, session?.state == .started else {
-      throw CaptureFailure("Start hands-free mode and wait for Listening first.")
+  func captureFromButton() async throws -> [String: Any] {
+    if enabled, listening, session?.state == .started {
+      try capture(trigger: "button")
+      return snapshot()
     }
-    try capture(trigger: "button")
+    guard session == nil, !permissionsPending, !saving else {
+      throw CaptureFailure("Wait for the current glasses session to finish, then try again.")
+    }
+    recordDiagnostic("Direct glasses photo requested; speech is not required")
+    permissionsPending = true; phase = "permissions"; error = nil; publish()
+    defer { permissionsPending = false }
+    let run = UUID(); generation = run
+    do {
+      try OncueWearablesConnection.shared.configure()
+      let permission = try await Wearables.shared.checkPermissionStatus(.camera)
+      let granted = permission == .granted ? permission : try await Wearables.shared.requestPermission(.camera)
+      guard generation == run else { return snapshot() }
+      guard granted == .granted else { throw CaptureFailure("Approve glasses camera access in Meta AI.") }
+      guard let device = Wearables.shared.devices.first(where: {
+        Wearables.shared.deviceForIdentifier($0)?.linkState == .connected
+      }) else { throw CaptureFailure("No glasses are connected to OnCue. Check the connection in Meta AI.") }
+      if let selected = Wearables.shared.deviceForIdentifier(device) {
+        recordDiagnostic("Glasses state: link=\(selected.linkState), wear=\(selected.donState), hinges=\(selected.hingeState), compatibility=\(selected.compatibility().displayString)")
+      }
+      let created = try Wearables.shared.createSession(deviceSelector: SpecificDeviceSelector(device: device))
+      session = created; photoOnlySession = true; enabled = true; phase = "starting"
+      tokens.append(created.statePublisher.listen { [weak self] state in
+        Task { @MainActor in
+          guard let self, self.generation == run else { return }
+          self.sessionChanged(state)
+        }
+      })
+      tokens.append(created.errorPublisher.listen { [weak self] error in
+        Task { @MainActor in
+          guard let self, self.generation == run else { return }
+          self.fail("Photo session: \(error.localizedDescription)")
+        }
+      })
+      publish(); try created.start()
+      startupTimeout = Task { [weak self] in
+        try? await Task.sleep(for: .seconds(30))
+        guard !Task.isCancelled, let self, self.generation == run, self.phase == "starting" else { return }
+        self.fail("The glasses photo session did not start. Check the connection and try again.")
+      }
+    } catch { if generation == run { fail(error.localizedDescription) }; throw error }
     return snapshot()
+  }
+
+  private func recordSessionError(_ error: DeviceSessionError) {
+    let code: String
+    switch error {
+    case .noEligibleDevice: code = "noEligibleDevice"
+    case .dwaUnavailable: code = "dwaUnavailable"
+    case .datAppOnTheGlassesUpdateRequired: code = "datAppOnTheGlassesUpdateRequired"
+    case .insufficientSDKVersion: code = "insufficientSDKVersion"
+    default: code = String(reflecting: error)
+    }
+    recordDiagnostic("Session error code: \(code)")
   }
 
   private func sessionChanged(_ state: DeviceSessionState) {
@@ -219,6 +280,14 @@ final class OncueWearablesCapture {
     case .started:
       guard enabled else { session?.stop(); return }
       do {
+        if photoOnlySession {
+          startupTimeout?.cancel()
+          if !capturing && !saving {
+            try capture(trigger: "button")
+            settleDescription()
+          }
+          return
+        }
         if speech == nil { try attachSpeech() }
         listening = speech?.state == .started
         phase = capturing ? "capturing" : (listening ? "listening" : "starting")
@@ -283,7 +352,7 @@ final class OncueWearablesCapture {
           self.photoStopped = state == .stopped
           if state == .started, self.enabled, self.capturing, !self.captureRequested {
             self.captureRequested = true
-            self.photo?.capturePhoto(resolution: .large, quality: .high)
+            self.photo?.capturePhoto(resolution: .medium, quality: .medium)
           }
           self.publish()
         }
@@ -293,6 +362,15 @@ final class OncueWearablesCapture {
           guard let self, self.generation == run, self.acceptingPhoto else { return }
           self.acceptingPhoto = false
           await self.savePhoto(data.imageData, timestamp: data.timestamp)
+        }
+      })
+      tokens.append(attached.photo.transferProgressPublisher.listen { [weak self] progress in
+        Task { @MainActor in
+          guard let self, self.generation == run, self.acceptingPhoto,
+            progress.fraction > self.lastTransferFraction else { return }
+          self.lastTransferFraction = progress.fraction
+          self.recordDiagnostic("Photo transfer: \(Int(progress.fraction * 100))%")
+          self.armPhotoTimeout(seconds: 45)
         }
       })
       tokens.append(attached.photo.errorPublisher.listen { [weak self] error in
@@ -318,17 +396,29 @@ final class OncueWearablesCapture {
     capturing = true; photoStopped = false
     acceptingPhoto = true; captureRequested = false; error = nil; phase = "capturing"; publish()
     photo?.start()
+    lastTransferFraction = 0
+    armPhotoTimeout(seconds: 120)
     let run = generation
-    captureTimeout?.cancel()
-    captureTimeout = Task { [weak self] in
-      try? await Task.sleep(for: .seconds(45))
+    captureHardDeadline?.cancel()
+    captureHardDeadline = Task { [weak self] in
+      try? await Task.sleep(for: .seconds(180))
       guard !Task.isCancelled, let self, self.generation == run, self.acceptingPhoto else { return }
-      self.captureFailed("The photo did not arrive. Check your glasses and try again.")
+      self.captureFailed("The photo transfer exceeded three minutes. Check the glasses connection and try again.")
+    }
+  }
+
+  private func armPhotoTimeout(seconds: Double) {
+    captureTimeout?.cancel()
+    let run = generation
+    captureTimeout = Task { [weak self] in
+      try? await Task.sleep(for: .seconds(seconds))
+      guard !Task.isCancelled, let self, self.generation == run, self.acceptingPhoto else { return }
+      self.captureFailed("The photo transfer stopped making progress. Check your glasses and try again.")
     }
   }
 
   private func savePhoto(_ data: Data, timestamp: Date) async {
-    captureTimeout?.cancel(); saving = true; phase = "saving"; publish()
+    captureTimeout?.cancel(); captureHardDeadline?.cancel(); saving = true; phase = "saving"; publish()
     let id = UUID().uuidString
     let device = session?.deviceId ?? ""
     let trigger = source
@@ -342,7 +432,30 @@ final class OncueWearablesCapture {
     } catch { captureFailed(error.localizedDescription) }
   }
 
-  func setOwner(_ value: String?) { ownerId = value }
+  func setOwner(_ value: String?) {
+    ownerId = value
+    recordDiagnostic("Frontend account available=\(value != nil)")
+    #if DEBUG
+    if value != nil, !debugStartAttempted,
+      ProcessInfo.processInfo.arguments.contains("--oncue-start-hands-free") {
+      debugStartAttempted = true
+      recordDiagnostic("Explicit developer test requested hands-free startup")
+      Task { @MainActor in
+        do {
+          let deadline = Date().addingTimeInterval(15)
+          while self.ownerId != nil, Date() < deadline {
+            let devices = OncueWearablesConnection.shared.status()["devices"] as? [[String: Any]] ?? []
+            if devices.contains(where: { $0["linkState"] as? String == "connected" }) { break }
+            try await Task.sleep(for: .seconds(1))
+          }
+          guard self.ownerId != nil else { return }
+          _ = try await self.start()
+        }
+        catch { self.recordDiagnostic("Hands-free test failed: \(error.localizedDescription)") }
+      }
+    }
+    #endif
+  }
 
   func interruptDeliveries() {
     guard captures.contains(where: { $0.delivery == "uploading" }) else { return }
@@ -399,6 +512,13 @@ final class OncueWearablesCapture {
       recordDiagnostic("Speech received: final=\(final), characters=\(text.count), collectingDescription=\(collectingDescription)")
     }
     let action = OncueCaptureCommand.action(text)
+    if action == .capture, !collectingDescription, !capturing, !saving, !acknowledgedSpeechCommand {
+      acknowledgedSpeechCommand = true
+      recordDiagnostic("Capture command heard; playing acknowledgement tone")
+      soundNotice = CaptureConfirmationDing.shared.play(acknowledgement: true)
+    }
+    if final { acknowledgedSpeechCommand = false }
+    if final { recordDiagnostic("Final speech matched capture=\(action == .capture), stop=\(action == .stop)") }
     if final, action == .stop {
       recordDiagnostic("Stop command recognized; ending hands-free session")
       _ = stop(); return
@@ -466,10 +586,11 @@ final class OncueWearablesCapture {
     if enabled { phase = listening ? "listening" : "paused" }
     else if session == nil { phase = error == nil ? "off" : "error" }
     publish()
+    if photoOnlySession { _ = stop() }
   }
   private func captureFailed(_ message: String) {
     recordDiagnostic("Capture failed: \(message)")
-    error = message; captureTimeout?.cancel(); finishCapture()
+    error = message; captureTimeout?.cancel(); captureHardDeadline?.cancel(); finishCapture()
   }
   private func fail(_ message: String) {
     recordDiagnostic("Session failed: \(message)")
@@ -477,12 +598,12 @@ final class OncueWearablesCapture {
     if session == nil { phase = "error"; publish() }
   }
   private func releaseSession() {
-    startupTimeout?.cancel(); captureTimeout?.cancel()
+    startupTimeout?.cancel(); captureTimeout?.cancel(); captureHardDeadline?.cancel()
     settleDescription()
     generation = UUID(); enabled = false; listening = false; capturing = false; acceptingPhoto = false
     let oldTokens = tokens; tokens = []
     Task { for token in oldTokens { await token.cancel() } }
-    speech = nil; photo = nil; camera = nil; session = nil; photoStopped = true
+    speech = nil; photo = nil; camera = nil; session = nil; photoStopped = true; photoOnlySession = false
   }
 }
 
@@ -521,7 +642,7 @@ private final class CaptureConfirmationDing: NSObject, AVAudioPlayerDelegate {
     return data
   }()
 
-  func play() -> String? {
+  func play(acknowledgement: Bool = false) -> String? {
     do {
       let audio = AVAudioSession.sharedInstance()
       // Do not replace or deactivate an existing recording/communication session.
@@ -531,7 +652,8 @@ private final class CaptureConfirmationDing: NSObject, AVAudioPlayerDelegate {
         try audio.setActive(true)
       }
       let newPlayer = try AVAudioPlayer(data: Self.tone, fileTypeHint: AVFileType.wav.rawValue)
-      player = newPlayer; newPlayer.delegate = self; newPlayer.volume = 0.7
+      player = newPlayer; newPlayer.delegate = self; newPlayer.volume = 0.8
+      newPlayer.enableRate = true; newPlayer.rate = acknowledgement ? 1.4 : 1.0
       guard newPlayer.prepareToPlay(), newPlayer.play() else {
         finish(newPlayer)
         return "Report saved, but the confirmation ding could not play."

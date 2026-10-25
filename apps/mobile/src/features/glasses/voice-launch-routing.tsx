@@ -16,7 +16,7 @@ export function VoiceLaunchRouting() {
       )
         return;
       handledLaunchId = state.lastLaunchId;
-      router.navigate("/capture");
+      router.navigate("/(app)/capture");
     };
     const unsubscribe = observeVoiceLaunch((state) => {
       receivedEvent = true;

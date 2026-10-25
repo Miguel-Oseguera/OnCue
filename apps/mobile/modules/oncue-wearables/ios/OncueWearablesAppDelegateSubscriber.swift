@@ -10,6 +10,7 @@ public class OncueWearablesAppDelegateSubscriber: ExpoAppDelegateSubscriber {
     Task { @MainActor in
       do {
         try OncueWearablesConnection.shared.configure()
+        OncueWearablesCapture.shared.recordDiagnostic("Native app launched; DAT SDK configured")
         OncueWearablesVoiceLaunch.shared.configure()
       } catch { /* Connection status exposes initialization errors. */ }
     }

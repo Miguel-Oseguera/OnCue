@@ -13,7 +13,9 @@ import {
 } from "./capture-service";
 import { useCapture } from "./use-capture";
 
-export default function CaptureScreen() {
+export default function CaptureScreen({
+  onClose,
+}: { onClose?: () => void } = {}) {
   const { state, error: statusError } = useCapture();
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -49,7 +51,7 @@ export default function CaptureScreen() {
         subtitle="Spot a task. Say the word. Review it here."
         back
         backLabel="Dashboard"
-        onBack={() => router.navigate("/")}
+        onBack={onClose ?? (() => router.navigate("/"))}
       />
       <View style={t.card}>
         <VoiceLaunchStatus />
@@ -111,9 +113,17 @@ export default function CaptureScreen() {
           />
         )}
         <Button
-          label={state.capturing ? "Receiving photo…" : "Capture with button"}
+          label={
+            state.capturing ? "Receiving photo…" : "Capture photo from glasses"
+          }
           secondary
-          disabled={!state.readyForCapture || pending || stopping}
+          disabled={
+            !captureAvailable ||
+            state.capturing ||
+            pending ||
+            stopping ||
+            starting
+          }
           onPress={() => void act("capturePhoto")}
         />
         {(error || statusError || state.error) && (

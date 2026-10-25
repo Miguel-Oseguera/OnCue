@@ -8,6 +8,9 @@ public class OncueWearablesModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("OncueWearables")
+    OnCreate { Task { @MainActor in
+      OncueWearablesCapture.shared.recordDiagnostic("Native bridge initialized")
+    } }
     Constant("bridgeVersion") { 4 }
     Events("onConnectionChange", "onCaptureChange", "onVoiceLaunchChange")
 
@@ -46,7 +49,7 @@ public class OncueWearablesModule: Module {
       await MainActor.run { OncueWearablesCapture.shared.stop() }
     }
     AsyncFunction("capturePhoto") { () async throws -> [String: Any] in
-      try await MainActor.run { try OncueWearablesCapture.shared.captureFromButton() }
+      try await OncueWearablesCapture.shared.captureFromButton()
     }
     OnStartObserving("onCaptureChange") { [weak self] in
       Task { @MainActor [weak self] in

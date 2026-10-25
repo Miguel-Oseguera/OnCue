@@ -16,7 +16,13 @@ struct CommandTests {
       ("ON QUEUE, capture this task — Restock water", "— Restock water"),
       ("OnCue capture this task\nThe exit is blocked.", "The exit is blocked."),
     ]
-    for (phrase, description) in captures {
+    let streamingCaptures: [(String, String)] = [
+      ("Okay. OnCue, capture this task. This room is a mess.", "This room is a mess."),
+      ("We are testing now. On cue capture this task: the exit is blocked.", "the exit is blocked."),
+      ("On Q capture this task. Restock the water.", "Restock the water."),
+      ("On que capture this task. Broken projector.", "Broken projector."),
+    ]
+    for (phrase, description) in captures + streamingCaptures {
       precondition(OncueCaptureCommand.action(phrase) == .capture, "Expected capture: \(phrase)")
       precondition(OncueCaptureCommand.description(phrase) == description, "Wrong description: \(phrase)")
       count += 1

@@ -1,4 +1,4 @@
-import { router } from "expo-router";
+import { CaptureModal } from "./capture-modal";
 import { CaptureIndicator } from "./capture-indicator";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, Text, View } from "react-native";
@@ -9,6 +9,7 @@ import { connectionLabel } from "./connection-state";
 import { connectGlasses, getGlassesStatus, observeGlasses } from "./service";
 
 export function GlassesConnectionCard() {
+  const [captureOpen, setCaptureOpen] = useState(false);
   const [status, setStatus] = useState<GlassesStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -143,9 +144,12 @@ export function GlassesConnectionCard() {
           <Button
             label="Hands-free capture"
             secondary
-            onPress={() => router.push("/capture")}
+            onPress={() => setCaptureOpen(true)}
           />
         </>
+      )}
+      {captureOpen && (
+        <CaptureModal visible onClose={() => setCaptureOpen(false)} />
       )}
       {(error || status?.error) && (
         <Notice text={error ?? status?.error ?? ""} />

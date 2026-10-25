@@ -8,6 +8,7 @@ type Transport = (
 ) => Promise<unknown>;
 export function createReportService(
   request: Transport,
+  fileFactory: (photo: CapturedPhoto) => Blob,
   formFactory: () => FormData = () => new FormData(),
 ) {
   return {
@@ -22,14 +23,9 @@ export function createReportService(
       const form = formFactory();
       form.append("text", text);
       form.append("source", "glasses");
-      // React Native FormData streams this local file as a multipart attachment.
-      const attachment = {
-        uri: photo.uri,
-        name: `${photo.id}.jpg`,
-        type: "image/jpeg",
-      };
-      // The native FormData implementation accepts URI attachments; DOM typings do not.
-      form.append("images", attachment as unknown as Blob);
+      // Expo 58 requires a Blob/File attachment, not the legacy URI object.
+      const attachment = fileFactory(photo);
+      form.append("images", attachment, `${photo.id}.jpg`);
       const body = await request(
         "/api/ai",
         { method: "POST", body: form },

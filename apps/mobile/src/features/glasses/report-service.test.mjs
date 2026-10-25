@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createReportService, deliverReport } from "./report-service.ts";
 
+const testImage = new Blob(["test jpeg"], { type: "image/jpeg" });
+const createService = (request, formFactory = form) =>
+  createReportService(request, () => testImage, formFactory);
 const photo = {
   id: "capture-1",
   uri: "file:///captures/capture-1.jpg",
@@ -15,15 +18,15 @@ const photo = {
 function form() {
   return {
     fields: [],
-    append(key, value) {
-      this.fields.push([key, value]);
+    append(key, value, name) {
+      this.fields.push(name ? [key, value, name] : [key, value]);
     },
   };
 }
 test("sends image and trimmed description in one authenticated API request with a longer AI timeout", async () => {
   const body = form();
   let calls = 0;
-  const service = createReportService(
+  const service = createService(
     async (path, init, options) => {
       calls++;
       assert.equal(path, "/api/ai");
@@ -34,10 +37,7 @@ test("sends image and trimmed description in one authenticated API request with 
       assert.deepEqual(body.fields, [
         ["text", "Projector in room 204 is broken."],
         ["source", "glasses"],
-        [
-          "images",
-          { uri: photo.uri, name: "capture-1.jpg", type: "image/jpeg" },
-        ],
+        ["images", testImage, "capture-1.jpg"],
       ]);
       return {
         processed: true,
@@ -51,7 +51,7 @@ test("sends image and trimmed description in one authenticated API request with 
   assert.equal(calls, 1);
 });
 test("does not send a report without a description or a local photo", async () => {
-  const service = createReportService(async () => {
+  const service = createService(async () => {
     assert.fail("must not contact backend");
   }, form);
   await assert.rejects(
@@ -69,7 +69,7 @@ test("does not send a report without a description or a local photo", async () =
 });
 test("accepts processed reports with no tasks and rejects unconfirmed or malformed responses", async () => {
   const run = (response) =>
-    createReportService(async () => response, form).submit(photo);
+    createService(async () => response, form).submit(photo);
   assert.deepEqual(await run({ processed: true, tasks: [] }), { taskIds: [] });
   for (const response of [
     null,
