@@ -22,7 +22,7 @@ user IDs and are opaque strings. The example IDs in early mockups such as
 | PATCH  | `/api/tasks/:taskId`       | 200 with the saved task                    |
 | POST   | `/api/media`               | 201 with the uploaded photo's metadata     |
 | GET    | `/api/media/:mediaId`      | 200 with authenticated image bytes         |
-| POST   | `/api/ai`                  | 200 with an explicit no-op response        |
+| POST   | `/api/ai`                  | 200 with analysis and the created task     |
 | GET    | `/api/tasks`               | 200 with task objects, optionally filtered |
 | POST   | `/api/tasks/claim/:taskId` | 200 with the task after claiming a slot    |
 
@@ -120,8 +120,8 @@ cookie when retrieving it. Browser images can use the cookie jar. Native image
 requests must include the cookie header or fetch the image through the
 authenticated client.
 
-Pass the returned `id` in the AI request's `mediaIds`. Uploading with `taskId`
-persists that association, but the dashboard does not include photo listings.
+To analyze images, send the files directly to `POST /api/ai` as described below.
+Uploading here with `taskId` persists that association, but the dashboard does not include photo listings.
 There is no media listing, deletion, or later attachment endpoint in this version.
 Keep the upload response in UI state when displaying a newly uploaded image.
 
@@ -130,26 +130,40 @@ credentials or local disk. Larger deployments can move bytes to object storage
 while preserving these routes. Downloads require a session and use private,
 no-store caching.
 
-## AI placeholder
+## Analyze a report with images
 
-Send JSON to `POST /api/ai`:
+Send `multipart/form-data` to `POST /api/ai` with:
 
-```json
-{
-  "text": "The projector in room 204 is not working. Send AV.",
-  "source": "glasses",
-  "mediaIds": []
-}
-```
+| Field    | Type                                                    | Required |
+| -------- | ------------------------------------------------------- | -------- |
+| `source` | Nonempty string, up to 50 characters, such as `glasses` | Yes      |
+| `text`   | Report text, up to 10,000 characters                    | No       |
+| `images` | JPEG, PNG, or WebP files, up to 10                      | No       |
 
-`source` is a required nonempty string up to 50 characters. `text` defaults to an
-empty string and has a 10,000-character limit. `mediaIds` defaults to an empty
-array with a maximum of 10 UUIDs. Provide text, media IDs, or both.
+Repeat the `images` field for multiple files. Provide text, images, or both.
+The combined image size limit is 10 MiB. The multipart body limit adds 64 KiB
+for text and form overhead. Files must be nonempty and have matching MIME types
+and signatures, as with photo uploads. Let the client set the multipart boundary.
+JSON bodies and `mediaIds` are no longer accepted.
 
-The response is always `{ "processed": false, "tasks": [] }` for a valid,
-authenticated request. This route does not call AI, inspect photos, resolve media
-IDs, persist a report, or create or update tasks. The frontend should not present
-the response as successful AI processing.
+The backend sends the text and image bytes together to Gemini through Vercel AI SDK.
+It requires `GEMINI_API_KEY`. On success, it returns `{ processed: true, analysis, tasks }`.
+The agent can search active tasks with `findRelatedTasks` and create a task with
+`createTask`. `tasks` contains the task returned by a successful creation tool call,
+or is empty when the agent does not create a task. The endpoint does not create
+tasks itself.
+
+The agent runner saves the report in the activity log before calling Gemini.
+The creation tool saves the task, links that report, and stores its uploaded
+photos in one transaction. Repeated or concurrent creation calls for the same
+report return the existing task without changing it or duplicating photos.
+After the agent finishes, the runner saves the final analysis on the report.
+
+If processing fails before task creation, the original report remains unlinked.
+If creation succeeds but a later model call fails, the task, report link, and
+photos remain saved; the final analysis may be absent. Reports matched to existing
+tasks remain unlinked for now. Photos are stored only when the creation tool runs.
+Image-only reports use a default instruction to analyze the event scene.
 
 ## Existing task helpers
 

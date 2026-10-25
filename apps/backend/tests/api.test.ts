@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { serve } from "@hono/node-server";
 import { after, test } from "node:test";
-import { eq, inArray, sql } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { app } from "../src/app.js";
 import { db, pool } from "../src/db.js";
@@ -15,7 +15,9 @@ import {
   teamMember,
   user,
 } from "../src/schema.js";
-import { maxPhotoBytes } from "../src/api/media.js";
+import { maxPhotoBytes } from "../src/photos.js";
+import { createTaskFromReport, findRelatedTasks } from "../src/tasks.js";
+import { createTaskSchema } from "../src/api/validation.js";
 
 after(async () => pool.end());
 
@@ -57,7 +59,7 @@ async function json<T>(
 }
 
 // These requests run against the real handler and database, with disposable records only.
-test("dashboard, tasks, photos, and the AI placeholder support the app contract", async (t) => {
+test("dashboard, tasks, photos, and AI reports support the app contract", async (t) => {
   const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
   await once(server, "listening");
   const address = server.address();
@@ -79,7 +81,11 @@ test("dashboard, tasks, photos, and the AI placeholder support the app contract"
   t.after(async () => {
     if (mediaIds.length)
       await db.delete(media).where(inArray(media.mediaId, mediaIds));
-    if (taskIds.length) await db.delete(task).where(inArray(task.id, taskIds));
+    if (taskIds.length) {
+      await db.delete(media).where(inArray(media.taskId, taskIds));
+      await db.delete(aiActivity).where(inArray(aiActivity.taskId, taskIds));
+      await db.delete(task).where(inArray(task.id, taskIds));
+    }
     await db.delete(team).where(inArray(team.id, [teamId, otherTeamId]));
     if (userIds.length) await db.delete(user).where(inArray(user.id, userIds));
   });
@@ -388,139 +394,538 @@ test("dashboard, tasks, photos, and the AI placeholder support the app contract"
     },
   );
 
+  await t.test("photos persist with authenticated retrieval", async () => {
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jitkAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const target = await create();
+    async function upload(file: File, taskId?: string) {
+      const form = new FormData();
+      form.append("file", file);
+      if (taskId) form.append("taskId", taskId);
+      return httpRequest("/api/media", {
+        method: "POST",
+        headers: { cookie: first.cookie },
+        body: form,
+      });
+    }
+    const saved = await json(
+      await upload(
+        new File([png], "photo.png", { type: "image/png" }),
+        target.id,
+      ),
+      201,
+      z.object({
+        id: z.guid(),
+        url: z.string(),
+        contentType: z.string(),
+        size: z.number(),
+        taskId: z.guid().nullable(),
+      }),
+    );
+    mediaIds.push(saved.id);
+    assert.equal(saved.taskId, target.id);
+    assert.equal(saved.size, png.length);
+    assert.equal(saved.contentType, "image/png");
+    assert.equal((await httpRequest(saved.url)).status, 401);
+    const download = await request(saved.url);
+    assert.equal(download.status, 200);
+    assert.equal(download.headers.get("Content-Type"), "image/png");
+    assert.equal(download.headers.get("X-Content-Type-Options"), "nosniff");
+    assert.deepEqual(Buffer.from(await download.arrayBuffer()), png);
+    assert.equal(
+      (await upload(new File(["<svg/>"], "bad.png", { type: "image/png" })))
+        .status,
+      415,
+    );
+    assert.equal(
+      (await upload(new File([png], "bad.jpg", { type: "image/jpeg" }))).status,
+      415,
+    );
+    assert.equal(
+      (await upload(new File([], "empty.png", { type: "image/png" }))).status,
+      400,
+    );
+    assert.equal(
+      (
+        await upload(
+          new File([new Uint8Array(maxPhotoBytes + 1)], "large.png", {
+            type: "image/png",
+          }),
+        )
+      ).status,
+      413,
+    );
+    assert.equal(
+      (
+        await upload(
+          new File([new Uint8Array(maxPhotoBytes + 128 * 1024)], "huge.png", {
+            type: "image/png",
+          }),
+        )
+      ).status,
+      413,
+    );
+    assert.equal(
+      (
+        await upload(
+          new File([png], "photo.png", { type: "image/png" }),
+          randomUUID(),
+        )
+      ).status,
+      404,
+    );
+    assert.equal((await request(`/api/media/${randomUUID()}`)).status, 404);
+  });
+
   await t.test(
-    "photos persist with authenticated retrieval and the AI endpoint has no side effects",
+    "related-task search matches text and location while excluding completed tasks",
     async () => {
+      const marker = randomUUID();
+      const open = await create({
+        title: `Projector ${marker}`,
+        location: "Room 204",
+      });
+      const active = await create({
+        title: "AV issue",
+        description: `Projector ${marker}`,
+        location: "Room 204",
+      });
+      await request(`/api/tasks/${active.id}`, "PATCH", {
+        status: "in_progress",
+      });
+      const closed = await create({
+        title: `Projector ${marker}`,
+        location: "Room 204",
+      });
+      await request(`/api/tasks/${closed.id}`, "PATCH", {
+        status: "completed",
+      });
+      const elsewhere = await create({
+        title: `Projector ${marker}`,
+        location: "Room 205",
+      });
+      const matches = await findRelatedTasks({
+        query: `projector ${marker}`,
+        location: "room 204",
+      });
+      assert.deepEqual(
+        matches.map((task) => task.id).sort(),
+        [open.id, active.id].sort(),
+      );
+      assert.equal((await findRelatedTasks({ query: marker })).length, 3);
+      const literal = await create({ title: `100%_ ${marker}` });
+      await create({ title: `100abc ${marker}` });
+      assert.deepEqual(
+        (await findRelatedTasks({ query: `100%_ ${marker}` })).map(
+          (task) => task.id,
+        ),
+        [literal.id],
+      );
+      assert.ok(!matches.some((task) => task.id === elsewhere.id));
+    },
+  );
+
+  await t.test(
+    "task creation requires a real report and rolls back invalid assignments",
+    async (t) => {
+      const reportId = randomUUID();
+      const title = `Invalid AI task ${randomUUID()}`;
+      const input = createTaskSchema.parse({
+        title,
+        priority: "high",
+        assigneeIds: [randomUUID()],
+      });
+      await db.insert(aiActivity).values({ reportId, report: title });
+      t.after(async () => {
+        await db.delete(aiActivity).where(eq(aiActivity.reportId, reportId));
+        await db.delete(task).where(eq(task.title, title));
+      });
+      const context = { source: "test", images: [] };
+      await assert.rejects(
+        createTaskFromReport({ ...context, input, reportId: randomUUID() }),
+        /Report not found/,
+      );
+      await assert.rejects(
+        createTaskFromReport({ ...context, input, reportId }),
+        /An assignee does not exist/,
+      );
+      assert.deepEqual(
+        await db
+          .select({ id: task.id })
+          .from(task)
+          .where(eq(task.title, title)),
+        [],
+      );
+      const [report] = await db
+        .select()
+        .from(aiActivity)
+        .where(eq(aiActivity.reportId, reportId));
+      assert.equal(report?.taskId, null);
+      assert.equal(report?.action, null);
+    },
+  );
+
+  await t.test(
+    "AI searches, creates through tools, and attaches each report and its images once",
+    async (t) => {
       const png = Buffer.from(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jitkAAAAASUVORK5CYII=",
         "base64",
       );
-      const target = await create();
-      async function upload(file: File, taskId?: string) {
+      const analysis = {
+        issueSummary: "Projector failure",
+        category: "equipment",
+        urgency: "critical",
+        recommendedActions: ["Send AV support"],
+        missingInformation: [],
+        requiresHumanAttention: true,
+      };
+      const geminiRequests: unknown[] = [];
+      const taskTitle = `AI projector ${randomUUID()}`;
+      let searchQuery = randomUUID();
+      let shouldCreateTask = true;
+      const toolInput = {
+        title: taskTitle,
+        description: "Send AV support",
+        priority: "urgent",
+        location: "Room 204",
+      };
+      const earlyReport = `The projector is broken ${randomUUID()}`;
+      const activityIds: string[] = [];
+      t.after(async () => {
+        if (activityIds.length) {
+          await db
+            .delete(aiActivity)
+            .where(inArray(aiActivity.reportId, activityIds));
+        }
+      });
+      const originalFetch = globalThis.fetch;
+      // Keep the real SDK and local HTTP/database flow; replace only Gemini's HTTP response.
+      const fetchMock = t.mock.method(
+        globalThis,
+        "fetch",
+        async (input: string | URL | Request, init?: RequestInit) => {
+          const outgoing = new Request(input, init);
+          if (
+            new URL(outgoing.url).hostname !==
+            "generativelanguage.googleapis.com"
+          ) {
+            return originalFetch(input, init);
+          }
+          if (geminiRequests.length === 0) {
+            const reports = await db
+              .select()
+              .from(aiActivity)
+              .where(eq(aiActivity.report, earlyReport));
+            activityIds.push(...reports.map((report) => report.reportId));
+            assert.equal(reports.length, 1);
+            assert.equal(reports[0]?.taskId, null);
+            assert.equal(reports[0]?.decision, null);
+            assert.equal(reports[0]?.action, null);
+          }
+          const payload: unknown = await outgoing.json();
+          geminiRequests.push(payload);
+          const parsed = z
+            .object({
+              contents: z.array(
+                z.object({
+                  parts: z.array(
+                    z.object({
+                      functionResponse: z
+                        .object({
+                          name: z.string(),
+                          response: z.object({ content: z.unknown() }),
+                        })
+                        .optional(),
+                    }),
+                  ),
+                }),
+              ),
+            })
+            .parse(payload);
+          const results = parsed.contents
+            .flatMap((content) => content.parts)
+            .flatMap((part) =>
+              part.functionResponse ? [part.functionResponse] : [],
+            );
+          if (!results.some((result) => result.name === "findRelatedTasks")) {
+            return Response.json({
+              candidates: [
+                {
+                  content: {
+                    role: "model",
+                    parts: [
+                      {
+                        functionCall: {
+                          name: "findRelatedTasks",
+                          args: { query: searchQuery },
+                        },
+                        thoughtSignature: "dGVzdC1zaWduYXR1cmU=",
+                      },
+                    ],
+                  },
+                  finishReason: "STOP",
+                },
+              ],
+            });
+          }
+          if (
+            shouldCreateTask &&
+            !results.some((result) => result.name === "createTask")
+          ) {
+            // Simultaneous duplicate calls must still create one task and one set of photos.
+            return Response.json({
+              candidates: [
+                {
+                  content: {
+                    role: "model",
+                    parts: [
+                      {
+                        functionCall: { name: "createTask", args: toolInput },
+                        thoughtSignature: "dGVzdC1zaWduYXR1cmU=",
+                      },
+                      {
+                        functionCall: { name: "createTask", args: toolInput },
+                        thoughtSignature: "dGVzdC1zaWduYXR1cmU=",
+                      },
+                    ],
+                  },
+                  finishReason: "STOP",
+                },
+              ],
+            });
+          }
+          if (shouldCreateTask) {
+            const created = results
+              .filter((result) => result.name === "createTask")
+              .map((result) => taskJson.parse(result.response.content));
+            taskIds.push(...created.map((task) => task.id));
+            assert.equal(created.length, 2);
+            assert.equal(created[0]?.id, created[1]?.id);
+          } else {
+            const matches = z
+              .array(z.object({ title: z.string() }))
+              .parse(
+                results.find((result) => result.name === "findRelatedTasks")
+                  ?.response.content,
+              );
+            assert.ok(matches.some((task) => task.title === taskTitle));
+          }
+          return Response.json({
+            candidates: [
+              {
+                content: {
+                  role: "model",
+                  parts: [{ text: JSON.stringify(analysis) }],
+                },
+                finishReason: "STOP",
+              },
+            ],
+          });
+        },
+      );
+      const previousKey = process.env.GEMINI_API_KEY;
+      process.env.GEMINI_API_KEY = "test-key";
+      t.after(() => {
+        fetchMock.mock.restore();
+        if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
+        else process.env.GEMINI_API_KEY = previousKey;
+      });
+      function submit(images: File[], text = "") {
         const form = new FormData();
-        form.append("file", file);
-        if (taskId) form.append("taskId", taskId);
-        return httpRequest("/api/media", {
+        form.append("source", "glasses");
+        if (text) form.append("text", text);
+        for (const image of images) form.append("images", image);
+        return httpRequest("/api/ai", {
           method: "POST",
           headers: { cookie: first.cookie },
           body: form,
         });
       }
-      const saved = await json(
-        await upload(
-          new File([png], "photo.png", { type: "image/png" }),
-          target.id,
-        ),
-        201,
-        z.object({
-          id: z.guid(),
-          url: z.string(),
-          contentType: z.string(),
-          size: z.number(),
-          taskId: z.guid().nullable(),
-        }),
+
+      for (const imageCount of [1, 2, 0]) {
+        const text =
+          imageCount === 1 ? earlyReport : imageCount === 0 ? "Send AV" : "";
+        const images = Array.from(
+          { length: imageCount },
+          () => new File([png], "photo.png", { type: "image/png" }),
+        );
+        const result = await json(
+          await submit(images, text),
+          200,
+          z.object({
+            processed: z.literal(true),
+            analysis: z.unknown(),
+            tasks: z.array(taskJson).length(1),
+          }),
+        );
+        const [created] = result.tasks;
+        assert.ok(created);
+        taskIds.push(created.id);
+        assert.equal(created.priority, "urgent");
+        assert.equal(created.title, taskTitle);
+        assert.equal(created.location, "Room 204");
+        assert.deepEqual(result.analysis, analysis);
+        const payload = z
+          .object({
+            contents: z.array(
+              z.object({
+                parts: z.array(
+                  z.object({
+                    text: z.string().optional(),
+                    inlineData: z
+                      .object({ data: z.string(), mimeType: z.string() })
+                      .optional(),
+                  }),
+                ),
+              }),
+            ),
+          })
+          .parse(geminiRequests.at(-1));
+        const parts = payload.contents.flatMap((content) => content.parts);
+        assert.deepEqual(
+          parts.flatMap((part) => (part.inlineData ? [part.inlineData] : [])),
+          images.map(() => ({
+            data: png.toString("base64"),
+            mimeType: "image/png",
+          })),
+        );
+        assert.ok(
+          parts.some((part) =>
+            part.text?.includes(text || "Analyze the attached images"),
+          ),
+        );
+        const stored = await db
+          .select()
+          .from(media)
+          .where(eq(media.taskId, created.id));
+        assert.equal(stored.length, imageCount);
+        for (const photo of stored) {
+          assert.deepEqual(photo.photoData, png);
+          assert.equal(photo.contentType, "image/png");
+          assert.equal(photo.photo, `/api/media/${photo.mediaId}`);
+        }
+        const reports = await db
+          .select()
+          .from(aiActivity)
+          .where(eq(aiActivity.taskId, created.id));
+        assert.equal(reports.length, 1);
+        assert.equal(reports[0]?.decision, JSON.stringify(analysis));
+        if (imageCount === 1) {
+          assert.equal(reports[0]?.reportId, activityIds[0]);
+        }
+      }
+
+      shouldCreateTask = false;
+      searchQuery = taskTitle;
+      const duplicateReport = `Follow-up report ${randomUUID()}`;
+      const before = await db
+        .select({ id: task.id })
+        .from(task)
+        .where(eq(task.title, taskTitle));
+      assert.equal(before.length, 3);
+      const duplicateResult = await json(
+        await submit([], duplicateReport),
+        200,
+        z.object({ processed: z.literal(true), tasks: z.array(taskJson) }),
       );
-      mediaIds.push(saved.id);
-      assert.equal(saved.taskId, target.id);
-      assert.equal(saved.size, png.length);
-      assert.equal(saved.contentType, "image/png");
-      assert.equal((await httpRequest(saved.url)).status, 401);
-      const download = await request(saved.url);
-      assert.equal(download.status, 200);
-      assert.equal(download.headers.get("Content-Type"), "image/png");
-      assert.equal(download.headers.get("X-Content-Type-Options"), "nosniff");
-      assert.deepEqual(Buffer.from(await download.arrayBuffer()), png);
+      assert.deepEqual(duplicateResult.tasks, []);
+      assert.deepEqual(
+        await db
+          .select({ id: task.id })
+          .from(task)
+          .where(eq(task.title, taskTitle)),
+        before,
+      );
+      const duplicateReports = await db
+        .select()
+        .from(aiActivity)
+        .where(eq(aiActivity.report, duplicateReport));
+      activityIds.push(...duplicateReports.map((report) => report.reportId));
+      assert.equal(duplicateReports[0]?.taskId, null);
+      assert.equal(duplicateReports[0]?.action, "No task created");
+
+      const failedReport = `AI failure test ${randomUUID()}`;
+      delete process.env.GEMINI_API_KEY;
+      try {
+        assert.equal((await submit([], failedReport)).status, 500);
+        const reports = await db
+          .select()
+          .from(aiActivity)
+          .where(eq(aiActivity.report, failedReport));
+        activityIds.push(...reports.map((report) => report.reportId));
+        assert.equal(reports.length, 1);
+        assert.equal(reports[0]?.taskId, null);
+        assert.equal(reports[0]?.decision, null);
+        assert.equal(reports[0]?.action, null);
+      } finally {
+        process.env.GEMINI_API_KEY = "test-key";
+      }
+
+      const callsBeforeInvalid = geminiRequests.length;
+      assert.equal((await submit([])).status, 400);
       assert.equal(
-        (await upload(new File(["<svg/>"], "bad.png", { type: "image/png" })))
+        (await submit([new File([], "empty.png", { type: "image/png" })]))
           .status,
-        415,
-      );
-      assert.equal(
-        (await upload(new File([png], "bad.jpg", { type: "image/jpeg" })))
-          .status,
-        415,
-      );
-      assert.equal(
-        (await upload(new File([], "empty.png", { type: "image/png" }))).status,
         400,
       );
       assert.equal(
         (
-          await upload(
+          await submit([
+            new File(["<svg/>"], "fake.png", { type: "image/png" }),
+          ])
+        ).status,
+        415,
+      );
+      assert.equal(
+        (await submit([new File([png], "wrong.jpg", { type: "image/jpeg" })]))
+          .status,
+        415,
+      );
+      assert.equal(
+        (
+          await submit(
+            Array.from(
+              { length: 11 },
+              () => new File([png], "photo.png", { type: "image/png" }),
+            ),
+          )
+        ).status,
+        400,
+      );
+      assert.equal(
+        (
+          await submit([
             new File([new Uint8Array(maxPhotoBytes + 1)], "large.png", {
               type: "image/png",
             }),
-          )
+          ])
         ).status,
         413,
       );
       assert.equal(
         (
-          await upload(
+          await submit([
             new File([new Uint8Array(maxPhotoBytes + 128 * 1024)], "huge.png", {
               type: "image/png",
             }),
-          )
+          ])
         ).status,
         413,
       );
       assert.equal(
         (
-          await upload(
-            new File([png], "photo.png", { type: "image/png" }),
-            randomUUID(),
-          )
-        ).status,
-        404,
-      );
-      assert.equal((await request(`/api/media/${randomUUID()}`)).status, 404);
-
-      const counts = async () => ({
-        tasks: (
-          await db.select({ count: sql<number>`count(*)::integer` }).from(task)
-        )[0]?.count,
-        reports: (
-          await db
-            .select({ count: sql<number>`count(*)::integer` })
-            .from(aiActivity)
-        )[0]?.count,
-        media: (
-          await db.select({ count: sql<number>`count(*)::integer` }).from(media)
-        )[0]?.count,
-      });
-      const before = await counts();
-      const snapshot = await json(
-        await request("/api/dashboard"),
-        200,
-        dashboardJson,
-      );
-      assert.deepEqual(
-        await json(
           await request("/api/ai", "POST", {
-            text: "The projector is broken",
+            text: "Report",
             source: "glasses",
-            mediaIds: [saved.id],
-          }),
-          200,
-          z.object({ processed: z.boolean(), tasks: z.array(z.unknown()) }),
-        ),
-        { processed: false, tasks: [] },
-      );
-      assert.deepEqual(await counts(), before);
-      assert.deepEqual(
-        await json(await request("/api/dashboard"), 200, dashboardJson),
-        snapshot,
-      );
-      assert.equal(
-        (
-          await request("/api/ai", "POST", {
-            source: "glasses",
-            text: "",
-            mediaIds: [],
+            mediaIds: [randomUUID()],
           })
         ).status,
         400,
       );
+      assert.equal(geminiRequests.length, callsBeforeInvalid);
     },
   );
 });
