@@ -74,6 +74,7 @@ final class OncueWearablesVoiceLaunch {
   private func publish() { let status = snapshot(); for observer in observers.values { observer(status) } }
 
   private func receive(_ launch: LaunchApp) {
+    OncueWearablesCapture.shared.recordDiagnostic("Hey Meta launch invocation received")
     let id = UUID()
     pending[id] = launch
     lastLaunchId = id.uuidString
