@@ -1,18 +1,18 @@
-import {
-  runLogisticsAgent,
-  type LogisticsAnalysis,
-} from "./index.js";
+import { runLogisticsAgent, type LogisticsAnalysis } from "./index.js";
 
 export class LogisticsConversation {
   private history: string[] = [];
 
   async send(message: string): Promise<LogisticsAnalysis> {
-    const result = await runLogisticsAgent(message, this.history);
+    const { analysis } = await runLogisticsAgent({
+      message,
+      history: this.history,
+    });
 
-    // Only save the report after successful analysis
+    // Only include successfully analyzed reports in conversation history.
     this.history.push(message);
 
-    return result;
+    return analysis;
   }
 
   getHistory(): string[] {
