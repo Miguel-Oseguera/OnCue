@@ -1,8 +1,8 @@
-
 import "dotenv/config";
 import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
 import { AGENT_INSTRUCTIONS } from "./instructions.js";
+import type { readPhoto } from "../photos.js";
 
 const LogisticsAnalysisSchema = z.object({
   issueSummary: z.string(),
@@ -21,15 +21,14 @@ const LogisticsAnalysisSchema = z.object({
   requiresHumanAttention: z.boolean(),
 });
 
-export type LogisticsAnalysis = z.infer<
-  typeof LogisticsAnalysisSchema
->;
+export type LogisticsAnalysis = z.infer<typeof LogisticsAnalysisSchema>;
 
 export async function runLogisticsAgent(
   message: string,
   history: string[] = [],
+  images: Awaited<ReturnType<typeof readPhoto>>[] = [],
 ): Promise<LogisticsAnalysis> {
-  if (!message.trim()) {
+  if (!message.trim() && images.length === 0) {
     throw new Error("A logistics report is required.");
   }
 
@@ -43,18 +42,25 @@ export async function runLogisticsAgent(
 
   const response = await ai.models.generateContent({
     model: "gemini-3.5-flash-lite",
-    contents: `
+    contents: [
+      {
+        text: `
 You are analyzing a live event logistics report.
 
 Previous reports about this incident:
 ${history.length ? history.join("\n") : "None"}
 
 Latest report:
-${message}
+${message || "Analyze the attached images for event logistics issues."}
 
 Analyze the current situation using the previous reports
 for context. Prioritize the latest information.
     `,
+      },
+      ...images.map(({ data, contentType }) => ({
+        inlineData: { data: data.toString("base64"), mimeType: contentType },
+      })),
+    ],
     config: {
       systemInstruction: AGENT_INSTRUCTIONS,
       responseMimeType: "application/json",

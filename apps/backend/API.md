@@ -22,7 +22,7 @@ user IDs and are opaque strings. The example IDs in early mockups such as
 | PATCH  | `/api/tasks/:taskId`       | 200 with the saved task                    |
 | POST   | `/api/media`               | 201 with the uploaded photo's metadata     |
 | GET    | `/api/media/:mediaId`      | 200 with authenticated image bytes         |
-| POST   | `/api/ai`                  | 200 with an explicit no-op response        |
+| POST   | `/api/ai`                  | 200 with analysis and the created task     |
 | GET    | `/api/tasks`               | 200 with task objects, optionally filtered |
 | POST   | `/api/tasks/claim/:taskId` | 200 with the task after claiming a slot    |
 
@@ -120,8 +120,8 @@ cookie when retrieving it. Browser images can use the cookie jar. Native image
 requests must include the cookie header or fetch the image through the
 authenticated client.
 
-Pass the returned `id` in the AI request's `mediaIds`. Uploading with `taskId`
-persists that association, but the dashboard does not include photo listings.
+To analyze images, send the files directly to `POST /api/ai` as described below.
+Uploading here with `taskId` persists that association, but the dashboard does not include photo listings.
 There is no media listing, deletion, or later attachment endpoint in this version.
 Keep the upload response in UI state when displaying a newly uploaded image.
 
@@ -130,26 +130,29 @@ credentials or local disk. Larger deployments can move bytes to object storage
 while preserving these routes. Downloads require a session and use private,
 no-store caching.
 
-## AI placeholder
+## Analyze a report with images
 
-Send JSON to `POST /api/ai`:
+Send `multipart/form-data` to `POST /api/ai` with:
 
-```json
-{
-  "text": "The projector in room 204 is not working. Send AV.",
-  "source": "glasses",
-  "mediaIds": []
-}
-```
+| Field    | Type                                                    | Required |
+| -------- | ------------------------------------------------------- | -------- |
+| `source` | Nonempty string, up to 50 characters, such as `glasses` | Yes      |
+| `text`   | Report text, up to 10,000 characters                    | No       |
+| `images` | JPEG, PNG, or WebP files, up to 10                      | No       |
 
-`source` is a required nonempty string up to 50 characters. `text` defaults to an
-empty string and has a 10,000-character limit. `mediaIds` defaults to an empty
-array with a maximum of 10 UUIDs. Provide text, media IDs, or both.
+Repeat the `images` field for multiple files. Provide text, images, or both.
+The combined image size limit is 10 MiB. The multipart body limit adds 64 KiB
+for text and form overhead. Files must be nonempty and have matching MIME types
+and signatures, as with photo uploads. Let the client set the multipart boundary.
+JSON bodies and `mediaIds` are no longer accepted.
 
-The response is always `{ "processed": false, "tasks": [] }` for a valid,
-authenticated request. This route does not call AI, inspect photos, resolve media
-IDs, persist a report, or create or update tasks. The frontend should not present
-the response as successful AI processing.
+The backend sends the text and image bytes together to Gemini. It requires
+`GEMINI_API_KEY`. On success, it returns `{ processed: true, analysis, tasks }`,
+where `tasks` contains one new, unassigned task for staff review. The backend
+saves the report in the activity log before calling Gemini, then updates that
+record with the analysis and task ID. If processing fails, the report remains
+with no task, decision, or action. Uploaded photos are stored against the task
+on success. Image-only reports use a default instruction to analyze the event scene.
 
 ## Existing task helpers
 

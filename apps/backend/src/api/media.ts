@@ -6,29 +6,14 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { requireSession } from "../auth.js";
 import { db } from "../db.js";
+import { maxPhotoBytes, readPhoto } from "../photos.js";
 import { media, task } from "../schema.js";
 import { mediaParams, validate } from "./validation.js";
 
-export const maxPhotoBytes = 10 * 1024 * 1024;
 const uploadSchema = z.strictObject({
   file: z.file(),
   taskId: z.guid().optional(),
 });
-
-function photoContentType(data: Buffer) {
-  if (data.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])))
-    return "image/jpeg";
-  if (
-    data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-  )
-    return "image/png";
-  if (
-    data.subarray(0, 4).toString() === "RIFF" &&
-    data.subarray(8, 12).toString() === "WEBP"
-  )
-    return "image/webp";
-  return null;
-}
 
 const photos = new Hono()
   .post(
@@ -42,20 +27,7 @@ const photos = new Hono()
     validate("form", uploadSchema),
     async (c) => {
       const { file, taskId } = c.req.valid("form");
-      if (file.size === 0) return c.json({ error: "Photo is empty" }, 400);
-      if (file.size > maxPhotoBytes)
-        return c.json({ error: "Photo exceeds 10 MiB" }, 413);
-      const data = Buffer.from(await file.arrayBuffer());
-      const contentType = photoContentType(data);
-      if (!contentType || contentType !== file.type) {
-        return c.json(
-          {
-            error:
-              "Upload a JPEG, PNG, or WebP photo with its matching MIME type",
-          },
-          415,
-        );
-      }
+      const { data, contentType } = await readPhoto(file);
       const id = randomUUID();
       const url = `/api/media/${id}`;
       await db.transaction(async (tx) => {

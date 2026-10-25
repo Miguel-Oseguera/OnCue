@@ -60,8 +60,10 @@ export const aiSchema = z
   .strictObject({
     text: z.string().trim().max(10_000).default(""),
     source: z.string().trim().min(1).max(50),
-    mediaIds: z.array(z.guid()).max(10).default([]),
+    images: z
+      .union([z.file().transform((file) => [file]), z.array(z.file()).max(10)])
+      .default([]),
   })
-  .refine((input) => input.text.length > 0 || input.mediaIds.length > 0, {
-    message: "Provide text or mediaIds",
+  .refine((input) => input.text.length > 0 || input.images.length > 0, {
+    message: "Provide text or images",
   });
